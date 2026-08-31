@@ -50,9 +50,27 @@ pub fn present_location(application: &gtk::Application, location: Option<PathBuf
     browser.set_density(theme_manager.browser_density());
     browser.set_operation_provider(Rc::new(LocalOperationProvider));
     let controller = browser.browser();
+
+    let empty_trash_button = gtk::Button::builder()
+        .tooltip_text("Empty Trash")
+        .visible(false)
+        .build();
+    empty_trash_button.set_child(Some(&crate::assets::danger_icon(
+        crate::assets::icons::TRASH,
+        20,
+    )));
+    empty_trash_button.add_css_class("header-action");
+    empty_trash_button.add_css_class("empty-trash");
+    let empty_trash_browser = browser.clone();
+    empty_trash_button.connect_clicked(move |_| {
+        empty_trash_browser.confirm_empty_trash();
+    });
+
     let preview = PreviewDrawer::new(Rc::new(LocalPreviewProvider));
     let preview_for_selection = preview.clone();
     let weak_controller = Rc::downgrade(&controller);
+    let empty_trash_for_nav = empty_trash_button.clone();
+    let weak_controller_for_nav = Rc::downgrade(&controller);
     controller.observe(move |event| match event {
         BrowserEvent::PreviewRequested { entry } => preview_for_selection.show(entry),
         BrowserEvent::FocusChanged {
@@ -68,6 +86,13 @@ pub fn present_location(application: &gtk::Application, location: Option<PathBuf
                 } else {
                     preview_for_selection.show(entry);
                 }
+            }
+        }
+        BrowserEvent::Reset
+        | BrowserEvent::ColumnAdded { .. }
+        | BrowserEvent::ColumnReloaded { .. } => {
+            if let Some(browser) = weak_controller_for_nav.upgrade() {
+                empty_trash_for_nav.set_visible(should_show_empty_trash(browser.active_location()));
             }
         }
         _ => {}
@@ -110,6 +135,7 @@ pub fn present_location(application: &gtk::Application, location: Option<PathBuf
     let header_actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     header_actions.add_css_class("header-actions");
     header_actions.append(&search_button);
+    header_actions.append(&empty_trash_button);
     header_actions.append(&appearance);
     header_actions.append(&settings);
     header_actions.append(&close_window);
@@ -1473,6 +1499,10 @@ fn home_directory() -> PathBuf {
     env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn should_show_empty_trash(location: Option<Location>) -> bool {
+    location.is_some_and(|location| location.uri_value() == Some("trash:///"))
 }
 
 #[cfg(test)]

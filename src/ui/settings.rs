@@ -11,7 +11,7 @@ use gtk::{gdk, glib, prelude::*, subclass::prelude::*};
 
 use crate::{
     assets::icons,
-    services::{self, ReleaseMetadata, ReleaseNotes, UpdateCheck, UpdateInstall},
+    services::{self, ReleaseMetadata, ReleaseNoteBlock, ReleaseNotes, UpdateCheck, UpdateInstall},
 };
 
 #[cfg(test)]
@@ -416,24 +416,50 @@ fn set_release_notes_message(notes: &gtk::Box, message: &str) {
     notes.append(&label);
 }
 
-fn set_release_notes_markup(notes: &gtk::Box, markup: &str) {
+fn set_release_note_blocks(notes: &gtk::Box, blocks: &[ReleaseNoteBlock]) {
     clear_release_notes(notes);
-    for line in markup.lines().filter(|line| !line.trim().is_empty()) {
-        if let Some(item) = line.strip_prefix("•  ") {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row.set_valign(gtk::Align::Start);
-            let bullet = gtk::Label::new(Some("•"));
-            bullet.add_css_class("release-notes-bullet");
-            bullet.set_valign(gtk::Align::Start);
-            let copy = release_notes_label();
-            copy.set_markup(item);
-            row.append(&bullet);
-            row.append(&copy);
-            notes.append(&row);
-        } else {
-            let label = release_notes_label();
-            label.set_markup(line);
-            notes.append(&label);
+    for block in blocks {
+        match block {
+            ReleaseNoteBlock::Heading { level, markup } => {
+                let label = release_notes_label();
+                label.add_css_class("release-notes-heading");
+                label.add_css_class(&format!("level-{level}"));
+                label.set_markup(markup);
+                notes.append(&label);
+            }
+            ReleaseNoteBlock::Paragraph(markup) => {
+                let label = release_notes_label();
+                label.set_markup(markup);
+                notes.append(&label);
+            }
+            ReleaseNoteBlock::ListItem {
+                marker,
+                depth,
+                markup,
+            } => {
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                row.set_valign(gtk::Align::Start);
+                row.set_margin_start(i32::try_from(depth.saturating_mul(18)).unwrap_or(i32::MAX));
+                let bullet = gtk::Label::new(Some(marker));
+                bullet.add_css_class("release-notes-bullet");
+                bullet.set_valign(gtk::Align::Start);
+                let copy = release_notes_label();
+                copy.set_markup(markup);
+                row.append(&bullet);
+                row.append(&copy);
+                notes.append(&row);
+            }
+            ReleaseNoteBlock::Code(markup) => {
+                let label = release_notes_label();
+                label.add_css_class("release-notes-code");
+                label.set_markup(&format!("<tt>{markup}</tt>"));
+                notes.append(&label);
+            }
+            ReleaseNoteBlock::Rule => {
+                let separator = gtk::Separator::new(gtk::Orientation::Horizontal);
+                separator.add_css_class("release-notes-rule");
+                notes.append(&separator);
+            }
         }
     }
 }
@@ -489,7 +515,7 @@ fn show_release_notes(card: &ReleaseNotesCard, release: &ReleaseMetadata) {
             "No release notes were provided for this release.",
         );
     } else {
-        set_release_notes_markup(&card.notes, &release.notes_markup);
+        set_release_note_blocks(&card.notes, &release.note_blocks);
     }
     card.fallback.set_uri(&release.url);
     card.fallback.set_visible(true);
@@ -833,7 +859,7 @@ pub(super) fn show_update_dialog(
             "No release notes were provided. Review this release on GitHub before continuing.",
         );
     } else {
-        set_release_notes_markup(&notes, &release.notes_markup);
+        set_release_note_blocks(&notes, &release.note_blocks);
     }
     let notes_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)

@@ -781,10 +781,35 @@ headerbar menubutton.header-action > button:focus-visible image {
   line-height: 1.3;
 }
 
+.release-notes-heading {
+  color: @theme_dim_text;
+  font-size: 1.08em;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.release-notes-heading.level-1 {
+  font-size: 1.18em;
+}
+
 .release-notes-bullet {
   color: @theme_accent;
   font-weight: 700;
   margin-top: 3px;
+}
+
+.release-notes-code {
+  background: alpha(@theme_bg, 0.58);
+  border: 1px solid alpha(@theme_border, 0.24);
+  border-radius: 4px;
+  color: @theme_dim_text;
+  padding: 8px;
+}
+
+.release-notes-rule {
+  background: alpha(@theme_border, 0.4);
+  color: @theme_border;
+  margin: 4px 0;
 }
 
 .release-notes-content link,

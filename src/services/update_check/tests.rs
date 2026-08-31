@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::{
-    ReleaseResponse, is_newer, markdown_to_pango, metadata, release_page_url, request_error_message,
+    ReleaseNoteBlock, ReleaseResponse, is_newer, metadata, parse_markdown, release_page_url,
+    request_error_message,
 };
 
 #[test]
@@ -39,6 +40,7 @@ fn release_body_is_retained() {
     let release = metadata(&response);
     assert_eq!(release.version, "1.2.3");
     assert_eq!(release.notes, "## Changes\n\n- Fast");
+    assert!(!release.note_blocks.is_empty());
 }
 
 #[test]
@@ -75,36 +77,95 @@ fn other_api_failures_include_the_status() {
 }
 
 #[test]
-fn release_markdown_renders_supported_formatting() {
-    let markup =
-        markdown_to_pango("## Changes\n\n- **Fast** and `safe`\n- [Details](https://example.test)");
-    assert!(markup.contains("<span size=\"large\"><b>Changes</b></span>"));
-    assert!(markup.contains("•  <b>Fast</b> and <tt>safe</tt>"));
-    assert!(markup.contains("<a href=\"https://example.test\">Details</a>"));
+fn release_markdown_renders_supported_formatting_as_blocks() {
+    assert_eq!(
+        parse_markdown("## Changes\n\n- **Fast** and `safe`\n- [Details](https://example.test)"),
+        vec![
+            ReleaseNoteBlock::Heading {
+                level: 2,
+                markup: "Changes".to_owned(),
+            },
+            ReleaseNoteBlock::ListItem {
+                marker: "•".to_owned(),
+                depth: 0,
+                markup: "<b>Fast</b> and <tt>safe</tt>".to_owned(),
+            },
+            ReleaseNoteBlock::ListItem {
+                marker: "•".to_owned(),
+                depth: 0,
+                markup: "<a href=\"https://example.test\">Details</a>".to_owned(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn multiline_formatting_and_code_stay_in_balanced_blocks() {
+    assert_eq!(
+        parse_markdown("**first\nsecond**\n\n```text\none < two\n```"),
+        vec![
+            ReleaseNoteBlock::Paragraph("<b>first\nsecond</b>".to_owned()),
+            ReleaseNoteBlock::Code("one &lt; two\n".to_owned()),
+        ]
+    );
+}
+
+#[test]
+fn nested_and_ordered_lists_keep_markers_and_depth() {
+    let blocks = parse_markdown("3. outer\n   - inner\n4. next");
+    assert_eq!(
+        blocks,
+        vec![
+            ReleaseNoteBlock::ListItem {
+                marker: "3.".to_owned(),
+                depth: 0,
+                markup: "outer".to_owned(),
+            },
+            ReleaseNoteBlock::ListItem {
+                marker: "•".to_owned(),
+                depth: 1,
+                markup: "inner".to_owned(),
+            },
+            ReleaseNoteBlock::ListItem {
+                marker: "4.".to_owned(),
+                depth: 0,
+                markup: "next".to_owned(),
+            },
+        ]
+    );
 }
 
 #[test]
 fn release_markdown_keeps_html_inert_and_does_not_load_images() {
-    let markup = markdown_to_pango(
+    let blocks = parse_markdown(
         "<script>alert('no')</script>\n\n![tracking](https://example.test/pixel.png)",
     );
-    assert!(!markup.contains("<script>"));
-    assert!(markup.contains("&lt;script&gt;"));
-    assert!(!markup.contains("href=\"https://example.test/pixel.png"));
-    assert!(markup.contains("[Image: tracking]"));
+    let debug = format!("{blocks:?}");
+    assert!(!debug.contains("<script>"));
+    assert!(debug.contains("&lt;script&gt;"));
+    assert!(!debug.contains("pixel.png"));
+    assert!(debug.contains("[Image: tracking]"));
 }
 
 #[test]
 fn release_markdown_does_not_activate_non_web_links() {
     assert_eq!(
-        markdown_to_pango("[Run](javascript:alert('no'))"),
-        "<u>Run</u>"
+        parse_markdown("[Run](javascript:alert('no'))"),
+        vec![ReleaseNoteBlock::Paragraph("<u>Run</u>".to_owned())]
     );
 }
 
 #[test]
-fn empty_release_markdown_is_empty_markup() {
-    assert!(markdown_to_pango("  \n").is_empty());
+fn malformed_markdown_and_entities_remain_inert() {
+    let blocks = parse_markdown("<broken & **unfinished");
+    let debug = format!("{blocks:?}");
+    assert!(debug.contains("&lt;broken &amp;"));
+    assert!(!debug.contains("<broken"));
+}
+
+#[test]
+fn empty_release_markdown_has_no_blocks() {
+    assert!(parse_markdown("  \n").is_empty());
 }
 
 #[test]

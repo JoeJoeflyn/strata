@@ -1230,6 +1230,7 @@ dependencies = [
  "cairo-rs",
  "gdk-pixbuf",
  "gio",
+ "glib",
  "glib-build-tools",
  "gtk4",
  "ignore",

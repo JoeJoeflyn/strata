@@ -45,7 +45,9 @@ fn available_notes_are_shown_only_for_a_newer_release() {
             version: "1.0.0".to_owned(),
             url: "https://example.test/release".to_owned(),
             notes: "Changes".to_owned(),
-            notes_markup: "Changes".to_owned(),
+            note_blocks: vec![crate::services::ReleaseNoteBlock::Paragraph(
+                "Changes".to_owned(),
+            )],
         },
         download_url: None,
     }));

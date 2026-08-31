@@ -1580,6 +1580,8 @@ fn build_explorer_pane(
         name.set_xalign(0.0);
         name.set_hexpand(true);
         name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        // Keep the label's natural width from widening this fixed-width table cell.
+        name.set_max_width_chars(1);
         let field = gtk::Entry::new();
         field.add_css_class("inline-rename");
         field.set_hexpand(true);
@@ -2435,6 +2437,8 @@ fn explorer_metadata_label() -> gtk::Label {
     label.add_css_class("explorer-metadata-cell");
     label.set_xalign(0.0);
     label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    // Metadata must truncate rather than overriding a resized column's width.
+    label.set_max_width_chars(1);
     label
 }
 

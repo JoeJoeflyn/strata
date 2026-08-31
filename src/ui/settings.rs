@@ -390,11 +390,59 @@ fn updates_page(manager: Rc<ThemeManager>, update_notice: UpdateNoticeHandler) -
     scrollable_page(&preferences, None)
 }
 
+fn release_notes_label() -> gtk::Label {
+    let label = gtk::Label::new(None);
+    label.add_css_class("release-notes-content");
+    label.set_xalign(0.0);
+    label.set_yalign(0.0);
+    label.set_hexpand(true);
+    label.set_wrap(true);
+    label.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    label.set_selectable(true);
+    label.set_use_markup(true);
+    label
+}
+
+fn clear_release_notes(notes: &gtk::Box) {
+    while let Some(child) = notes.first_child() {
+        notes.remove(&child);
+    }
+}
+
+fn set_release_notes_message(notes: &gtk::Box, message: &str) {
+    clear_release_notes(notes);
+    let label = release_notes_label();
+    label.set_text(message);
+    notes.append(&label);
+}
+
+fn set_release_notes_markup(notes: &gtk::Box, markup: &str) {
+    clear_release_notes(notes);
+    for line in markup.lines().filter(|line| !line.trim().is_empty()) {
+        if let Some(item) = line.strip_prefix("•  ") {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row.set_valign(gtk::Align::Start);
+            let bullet = gtk::Label::new(Some("•"));
+            bullet.add_css_class("release-notes-bullet");
+            bullet.set_valign(gtk::Align::Start);
+            let copy = release_notes_label();
+            copy.set_markup(item);
+            row.append(&bullet);
+            row.append(&copy);
+            notes.append(&row);
+        } else {
+            let label = release_notes_label();
+            label.set_markup(line);
+            notes.append(&label);
+        }
+    }
+}
+
 #[derive(Clone)]
 struct ReleaseNotesCard {
     container: gtk::Box,
     title: gtk::Label,
-    notes: gtk::Label,
+    notes: gtk::Box,
     fallback: gtk::LinkButton,
 }
 
@@ -405,14 +453,8 @@ fn release_notes_card(title: &str, initial: &str) -> ReleaseNotesCard {
     title_label.add_css_class("release-notes-title");
     title_label.set_xalign(0.0);
     title_label.set_wrap(true);
-    let notes = gtk::Label::new(Some(initial));
-    notes.add_css_class("release-notes-content");
-    notes.set_xalign(0.0);
-    notes.set_yalign(0.0);
-    notes.set_wrap(true);
-    notes.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    notes.set_selectable(true);
-    notes.set_use_markup(true);
+    let notes = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    set_release_notes_message(&notes, initial);
     let fallback =
         gtk::LinkButton::with_label("https://github.com/lgse/strata/releases", "View on GitHub");
     fallback.add_css_class("release-notes-fallback");
@@ -441,10 +483,12 @@ fn show_release_notes(card: &ReleaseNotesCard, release: &ReleaseMetadata) {
         release.version
     ));
     if release.notes.trim().is_empty() {
-        card.notes
-            .set_text("No release notes were provided for this release.");
+        set_release_notes_message(
+            &card.notes,
+            "No release notes were provided for this release.",
+        );
     } else {
-        card.notes.set_markup(&release.notes_markup);
+        set_release_notes_markup(&card.notes, &release.notes_markup);
     }
     card.fallback.set_uri(&release.url);
     card.fallback.set_visible(true);
@@ -460,7 +504,8 @@ fn load_current_release_notes(card: &ReleaseNotesCard) {
                 glib::ControlFlow::Break
             }
             Ok(ReleaseNotes::Unavailable { url }) => {
-                card.notes.set_text(
+                set_release_notes_message(
+                    &card.notes,
                     "Release notes are unavailable because this version’s tag was not found.",
                 );
                 card.fallback.set_uri(&url);
@@ -468,15 +513,18 @@ fn load_current_release_notes(card: &ReleaseNotesCard) {
                 glib::ControlFlow::Break
             }
             Ok(ReleaseNotes::Failed { message, url }) => {
-                card.notes
-                    .set_text(&format!("Couldn’t load release notes: {message}"));
+                set_release_notes_message(
+                    &card.notes,
+                    &format!("Couldn’t load release notes: {message}"),
+                );
                 card.fallback.set_uri(&url);
                 card.fallback.set_visible(true);
                 glib::ControlFlow::Break
             }
             Err(TryRecvError::Empty) => glib::ControlFlow::Continue,
             Err(TryRecvError::Disconnected) => {
-                card.notes.set_text(
+                set_release_notes_message(
+                    &card.notes,
                     "Couldn’t load release notes because the request ended unexpectedly.",
                 );
                 glib::ControlFlow::Break
@@ -548,9 +596,7 @@ fn update_check_row(
             progress.remove_css_class("error");
             status.set_text("Checking for updates…");
             available_notes.title.set_text("Available release");
-            available_notes
-                .notes
-                .set_text("Checking for a newer release…");
+            set_release_notes_message(&available_notes.notes, "Checking for a newer release…");
             available_notes.fallback.set_visible(false);
             available_notes.container.set_visible(true);
             button.set_sensitive(false);
@@ -593,16 +639,18 @@ fn update_check_row(
                                 available_notes
                                     .title
                                     .set_text("Current release is the latest");
-                                available_notes
-                                    .notes
-                                    .set_text("There is no newer release available.");
+                                set_release_notes_message(
+                                    &available_notes.notes,
+                                    "There is no newer release available.",
+                                );
                                 available_notes.fallback.set_visible(false);
                             }
                             UpdateCheck::Failed(message) => {
                                 available_notes.title.set_text("Available release");
-                                available_notes.notes.set_text(&format!(
-                                    "Couldn’t check for a newer release: {message}"
-                                ));
+                                set_release_notes_message(
+                                    &available_notes.notes,
+                                    &format!("Couldn’t check for a newer release: {message}"),
+                                );
                                 available_notes
                                     .fallback
                                     .set_uri("https://github.com/lgse/strata/releases/latest");
@@ -616,7 +664,10 @@ fn update_check_row(
                     Err(TryRecvError::Empty) => glib::ControlFlow::Continue,
                     Err(TryRecvError::Disconnected) => {
                         status.set_text("Couldn't check for updates");
-                        available_notes.notes.set_text("Couldn’t check for a newer release because the request ended unexpectedly.");
+                        set_release_notes_message(
+                            &available_notes.notes,
+                            "Couldn’t check for a newer release because the request ended unexpectedly.",
+                        );
                         available_notes
                             .fallback
                             .set_uri("https://github.com/lgse/strata/releases/latest");
@@ -798,20 +849,14 @@ pub(super) fn show_update_dialog(
     let notes_heading = gtk::Label::new(Some("What’s new"));
     notes_heading.add_css_class("release-notes-title");
     notes_heading.set_xalign(0.0);
-    let notes = gtk::Label::new(None);
-    notes.add_css_class("release-notes-content");
-    notes.set_xalign(0.0);
-    notes.set_yalign(0.0);
-    notes.set_wrap(true);
-    notes.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-    notes.set_selectable(true);
-    notes.set_use_markup(true);
+    let notes = gtk::Box::new(gtk::Orientation::Vertical, 6);
     if release.notes.trim().is_empty() {
-        notes.set_text(
+        set_release_notes_message(
+            &notes,
             "No release notes were provided. Review this release on GitHub before continuing.",
         );
     } else {
-        notes.set_markup(&release.notes_markup);
+        set_release_notes_markup(&notes, &release.notes_markup);
     }
     let notes_scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)

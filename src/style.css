@@ -781,6 +781,11 @@ headerbar menubutton.header-action > button:focus-visible image {
   line-height: 1.3;
 }
 
+.release-notes-bullet {
+  color: @theme_accent;
+  font-weight: 700;
+}
+
 .release-notes-content link,
 .release-notes-content link:visited,
 .release-notes-content link:hover,

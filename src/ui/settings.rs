@@ -472,6 +472,7 @@ fn release_notes_card(title: &str, initial: &str) -> ReleaseNotesCard {
 }
 
 fn show_release_notes(card: &ReleaseNotesCard, release: &ReleaseMetadata) {
+    card.container.set_visible(true);
     card.title.set_text(&format!(
         "{} · v{}",
         card.title
@@ -595,10 +596,8 @@ fn update_check_row(
             progress.set_visible(false);
             progress.remove_css_class("error");
             status.set_text("Checking for updates…");
-            available_notes.title.set_text("Available release");
-            set_release_notes_message(&available_notes.notes, "Checking for a newer release…");
+            available_notes.container.set_visible(false);
             available_notes.fallback.set_visible(false);
-            available_notes.container.set_visible(true);
             button.set_sensitive(false);
             let receiver = services::check_for_updates(env!("CARGO_PKG_VERSION"));
             let checking = checking.clone();
@@ -611,6 +610,9 @@ fn update_check_row(
                 match receiver.try_recv() {
                     Ok(result) => {
                         status.set_markup(&update_check_message(&result));
+                        available_notes
+                            .container
+                            .set_visible(shows_available_release_notes(&result));
                         match &result {
                             UpdateCheck::Available {
                                 release,
@@ -635,27 +637,7 @@ fn update_check_row(
                                     button.set_label("Install update");
                                 }
                             }
-                            UpdateCheck::UpToDate => {
-                                available_notes
-                                    .title
-                                    .set_text("Current release is the latest");
-                                set_release_notes_message(
-                                    &available_notes.notes,
-                                    "There is no newer release available.",
-                                );
-                                available_notes.fallback.set_visible(false);
-                            }
-                            UpdateCheck::Failed(message) => {
-                                available_notes.title.set_text("Available release");
-                                set_release_notes_message(
-                                    &available_notes.notes,
-                                    &format!("Couldn’t check for a newer release: {message}"),
-                                );
-                                available_notes
-                                    .fallback
-                                    .set_uri("https://github.com/lgse/strata/releases/latest");
-                                available_notes.fallback.set_visible(true);
-                            }
+                            UpdateCheck::UpToDate | UpdateCheck::Failed(_) => {}
                         }
                         button.set_sensitive(true);
                         checking.set(false);
@@ -663,15 +645,10 @@ fn update_check_row(
                     }
                     Err(TryRecvError::Empty) => glib::ControlFlow::Continue,
                     Err(TryRecvError::Disconnected) => {
-                        status.set_text("Couldn't check for updates");
-                        set_release_notes_message(
-                            &available_notes.notes,
-                            "Couldn’t check for a newer release because the request ended unexpectedly.",
+                        status.set_markup(
+                            "Couldn't check for updates · <a href=\"https://github.com/lgse/strata/releases/latest\">View releases on GitHub</a>",
                         );
-                        available_notes
-                            .fallback
-                            .set_uri("https://github.com/lgse/strata/releases/latest");
-                        available_notes.fallback.set_visible(true);
+                        available_notes.container.set_visible(false);
                         button.set_sensitive(true);
                         checking.set(false);
                         glib::ControlFlow::Break
@@ -992,6 +969,10 @@ pub(super) fn show_update_dialog(
     });
 }
 
+fn shows_available_release_notes(result: &UpdateCheck) -> bool {
+    matches!(result, UpdateCheck::Available { .. })
+}
+
 fn update_check_message(result: &UpdateCheck) -> String {
     match result {
         UpdateCheck::UpToDate => {
@@ -1002,12 +983,10 @@ fn update_check_message(result: &UpdateCheck) -> String {
             glib::markup_escape_text(&release.url),
             glib::markup_escape_text(&release.version),
         ),
-        UpdateCheck::Failed(message) => {
-            format!(
-                "Couldn't check for updates: {}",
-                glib::markup_escape_text(message)
-            )
-        }
+        UpdateCheck::Failed(message) => format!(
+            "Couldn't check for updates: {} · <a href=\"https://github.com/lgse/strata/releases/latest\">View releases on GitHub</a>",
+            glib::markup_escape_text(message)
+        ),
     }
 }
 

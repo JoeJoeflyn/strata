@@ -11,7 +11,7 @@ use gtk::{gdk, glib, prelude::*, subclass::prelude::*};
 
 use crate::{
     assets::icons,
-    services::{self, UpdateCheck, UpdateInstall},
+    services::{self, ReleaseMetadata, ReleaseNotes, UpdateCheck, UpdateInstall},
 };
 
 #[cfg(test)]
@@ -25,7 +25,7 @@ use super::{
 };
 
 type ThemeCards = Rc<RefCell<Vec<(String, gtk::Button, gtk::Image)>>>;
-pub(super) type UpdateNoticeHandler = Rc<dyn Fn(Option<(String, String, String)>)>;
+pub(super) type UpdateNoticeHandler = Rc<dyn Fn(Option<(ReleaseMetadata, String)>)>;
 
 const DIALOG_WIDTH: i32 = 920;
 const DIALOG_HEIGHT: i32 = 620;
@@ -199,9 +199,10 @@ pub fn build_layer(
         .hexpand(true)
         .vexpand(true)
         .build();
+    stack.add_named(&general_page(browser, themes.clone()), Some("general"));
     stack.add_named(
-        &general_page(browser, themes.clone(), update_notice),
-        Some("general"),
+        &updates_page(themes.clone(), update_notice),
+        Some("updates"),
     );
     stack.add_named(&keybindings_page(), Some("keybindings"));
     let (theme_page, responsive_flows) = theme_page(themes);
@@ -217,6 +218,7 @@ pub fn build_layer(
         ("General", icons::SLIDERS, "general"),
         ("Keybindings", icons::KEYBOARD, "keybindings"),
         ("Theme & appearance", icons::PALETTE, "theme"),
+        ("Updates", icons::DOWNLOADS, "updates"),
         ("About", icons::INFO, "about"),
     ] {
         let active = name == "general";
@@ -290,11 +292,7 @@ fn hide(layer: &gtk::Box, button: &gtk::Button, root: &BlurBin) {
     button.remove_css_class("active");
 }
 
-fn general_page(
-    browser: &BrowserView,
-    manager: Rc<ThemeManager>,
-    update_notice: UpdateNoticeHandler,
-) -> gtk::Widget {
+fn general_page(browser: &BrowserView, manager: Rc<ThemeManager>) -> gtk::Widget {
     let preferences = page_content();
     append_heading(&preferences, "BROWSING");
     let (peeking_row, peeking) = settings_option(
@@ -345,16 +343,34 @@ fn general_page(
     reduce_motion.connect_active_notify(|toggle| set_reduce_motion(toggle.is_active()));
     preferences.append(&motion_row);
 
-    append_heading(&preferences, "UPDATES");
+    scrollable_page(&preferences, None)
+}
+
+fn updates_page(manager: Rc<ThemeManager>, update_notice: UpdateNoticeHandler) -> gtk::Widget {
+    let preferences = page_content();
+    append_heading(&preferences, "UPDATE PREFERENCES");
     let auto_check_enabled = manager.checks_for_updates();
     let (auto_check_row, auto_check) = settings_option(
         "Automatically check for updates",
-        "Check GitHub for a newer release each time settings are opened.",
+        "Check GitHub for a newer release when Strata starts.",
         auto_check_enabled,
     );
     preferences.append(&auto_check_row);
-    let (update_row, run_check) = update_check_row(manager.clone(), update_notice.clone());
+
+    let available_notes = release_notes_card(
+        "Available release",
+        "Check for updates to see the latest release notes.",
+    );
+    let (update_row, run_check) = update_check_row(update_notice.clone(), available_notes.clone());
     preferences.append(&update_row);
+
+    append_heading(&preferences, "RELEASE NOTES");
+    let current_notes = release_notes_card(
+        &format!("Current release · v{}", env!("CARGO_PKG_VERSION")),
+        "Loading release notes…",
+    );
+    preferences.append(&current_notes.container);
+    load_current_release_notes(&current_notes);
 
     let manager_for_updates = manager.clone();
     let toggled_check = run_check.clone();
@@ -374,12 +390,108 @@ fn general_page(
     scrollable_page(&preferences, None)
 }
 
+#[derive(Clone)]
+struct ReleaseNotesCard {
+    container: gtk::Box,
+    title: gtk::Label,
+    notes: gtk::Label,
+    fallback: gtk::LinkButton,
+}
+
+fn release_notes_card(title: &str, initial: &str) -> ReleaseNotesCard {
+    let container = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    container.add_css_class("release-notes-card");
+    let title_label = gtk::Label::new(Some(title));
+    title_label.add_css_class("release-notes-title");
+    title_label.set_xalign(0.0);
+    title_label.set_wrap(true);
+    let notes = gtk::Label::new(Some(initial));
+    notes.add_css_class("release-notes-content");
+    notes.set_xalign(0.0);
+    notes.set_yalign(0.0);
+    notes.set_wrap(true);
+    notes.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    notes.set_selectable(true);
+    notes.set_use_markup(true);
+    let fallback =
+        gtk::LinkButton::with_label("https://github.com/lgse/strata/releases", "View on GitHub");
+    fallback.add_css_class("release-notes-fallback");
+    fallback.set_halign(gtk::Align::Start);
+    fallback.set_visible(false);
+    container.append(&title_label);
+    container.append(&notes);
+    container.append(&fallback);
+    ReleaseNotesCard {
+        container,
+        title: title_label,
+        notes,
+        fallback,
+    }
+}
+
+fn show_release_notes(card: &ReleaseNotesCard, release: &ReleaseMetadata) {
+    card.title.set_text(&format!(
+        "{} · v{}",
+        card.title
+            .text()
+            .split('·')
+            .next()
+            .unwrap_or("Release")
+            .trim(),
+        release.version
+    ));
+    if release.notes.trim().is_empty() {
+        card.notes
+            .set_text("No release notes were provided for this release.");
+    } else {
+        card.notes.set_markup(&release.notes_markup);
+    }
+    card.fallback.set_uri(&release.url);
+    card.fallback.set_visible(true);
+}
+
+fn load_current_release_notes(card: &ReleaseNotesCard) {
+    let receiver = services::fetch_release_notes(env!("CARGO_PKG_VERSION"));
+    let card = card.clone();
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        match receiver.try_recv() {
+            Ok(ReleaseNotes::Found(release)) => {
+                show_release_notes(&card, &release);
+                glib::ControlFlow::Break
+            }
+            Ok(ReleaseNotes::Unavailable { url }) => {
+                card.notes.set_text(
+                    "Release notes are unavailable because this version’s tag was not found.",
+                );
+                card.fallback.set_uri(&url);
+                card.fallback.set_visible(true);
+                glib::ControlFlow::Break
+            }
+            Ok(ReleaseNotes::Failed { message, url }) => {
+                card.notes
+                    .set_text(&format!("Couldn’t load release notes: {message}"));
+                card.fallback.set_uri(&url);
+                card.fallback.set_visible(true);
+                glib::ControlFlow::Break
+            }
+            Err(TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(TryRecvError::Disconnected) => {
+                card.notes.set_text(
+                    "Couldn’t load release notes because the request ended unexpectedly.",
+                );
+                glib::ControlFlow::Break
+            }
+        }
+    });
+}
+
 fn update_check_row(
-    manager: Rc<ThemeManager>,
     update_notice: UpdateNoticeHandler,
+    available_notes: ReleaseNotesCard,
 ) -> (gtk::Box, Rc<dyn Fn()>) {
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 0);
     row.add_css_class("settings-option");
+    let summary = gtk::Box::new(gtk::Orientation::Horizontal, 16);
     let copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
     copy.set_hexpand(true);
     copy.set_valign(gtk::Align::Center);
@@ -400,9 +512,13 @@ fn update_check_row(
     copy.append(&progress);
     let button = gtk::Button::with_label("Check now");
     button.add_css_class("settings-update-check");
-    button.set_valign(gtk::Align::Center);
-    row.append(&copy);
-    row.append(&button);
+    button.set_valign(gtk::Align::Start);
+    summary.append(&copy);
+    summary.append(&button);
+    row.append(&summary);
+    available_notes.container.add_css_class("inline");
+    available_notes.container.set_visible(false);
+    row.append(&available_notes.container);
 
     let checking = Rc::new(Cell::new(false));
     // Set once a check finds an update this platform can install; consumed by the
@@ -415,11 +531,11 @@ fn update_check_row(
         let checking = checking.clone();
         let status = status.clone();
         let button = button.clone();
-        let manager = manager.clone();
         let update_notice = update_notice.clone();
         let pending_download = pending_download.clone();
         let installed = installed.clone();
         let progress = progress.clone();
+        let available_notes = available_notes.clone();
         move || {
             if checking.replace(true) {
                 return;
@@ -431,40 +547,67 @@ fn update_check_row(
             progress.set_visible(false);
             progress.remove_css_class("error");
             status.set_text("Checking for updates…");
+            available_notes.title.set_text("Available release");
+            available_notes
+                .notes
+                .set_text("Checking for a newer release…");
+            available_notes.fallback.set_visible(false);
+            available_notes.container.set_visible(true);
             button.set_sensitive(false);
             let receiver = services::check_for_updates(env!("CARGO_PKG_VERSION"));
             let checking = checking.clone();
             let status = status.clone();
             let button = button.clone();
-            let manager = manager.clone();
             let update_notice = update_notice.clone();
             let pending_download = pending_download.clone();
+            let available_notes = available_notes.clone();
             glib::timeout_add_local(Duration::from_millis(100), move || {
                 match receiver.try_recv() {
                     Ok(result) => {
                         status.set_markup(&update_check_message(&result));
                         match &result {
                             UpdateCheck::Available {
-                                version,
-                                url,
+                                release,
                                 download_url: Some(download_url),
-                            } if manager.checks_for_updates() => {
-                                update_notice(Some((
-                                    version.clone(),
-                                    url.clone(),
-                                    download_url.clone(),
-                                )));
+                            } => {
+                                update_notice(Some((release.clone(), download_url.clone())));
                             }
-                            UpdateCheck::UpToDate => update_notice(None),
-                            UpdateCheck::Available { .. } | UpdateCheck::Failed(_) => {}
+                            UpdateCheck::UpToDate
+                            | UpdateCheck::Available {
+                                download_url: None, ..
+                            } => update_notice(None),
+                            UpdateCheck::Failed(_) => {}
                         }
-                        if let UpdateCheck::Available {
-                            download_url: Some(download_url),
-                            ..
-                        } = &result
-                        {
-                            *pending_download.borrow_mut() = Some(download_url.clone());
-                            button.set_label("Install update");
+                        match &result {
+                            UpdateCheck::Available {
+                                release,
+                                download_url,
+                            } => {
+                                show_release_notes(&available_notes, release);
+                                if let Some(download_url) = download_url {
+                                    *pending_download.borrow_mut() = Some(download_url.clone());
+                                    button.set_label("Install update");
+                                }
+                            }
+                            UpdateCheck::UpToDate => {
+                                available_notes
+                                    .title
+                                    .set_text("Current release is the latest");
+                                available_notes
+                                    .notes
+                                    .set_text("There is no newer release available.");
+                                available_notes.fallback.set_visible(false);
+                            }
+                            UpdateCheck::Failed(message) => {
+                                available_notes.title.set_text("Available release");
+                                available_notes.notes.set_text(&format!(
+                                    "Couldn’t check for a newer release: {message}"
+                                ));
+                                available_notes
+                                    .fallback
+                                    .set_uri("https://github.com/lgse/strata/releases/latest");
+                                available_notes.fallback.set_visible(true);
+                            }
                         }
                         button.set_sensitive(true);
                         checking.set(false);
@@ -473,6 +616,11 @@ fn update_check_row(
                     Err(TryRecvError::Empty) => glib::ControlFlow::Continue,
                     Err(TryRecvError::Disconnected) => {
                         status.set_text("Couldn't check for updates");
+                        available_notes.notes.set_text("Couldn’t check for a newer release because the request ended unexpectedly.");
+                        available_notes
+                            .fallback
+                            .set_uri("https://github.com/lgse/strata/releases/latest");
+                        available_notes.fallback.set_visible(true);
                         button.set_sensitive(true);
                         checking.set(false);
                         glib::ControlFlow::Break
@@ -601,7 +749,11 @@ fn restart(application: Option<&gtk::Application>) {
     }
 }
 
-pub(super) fn show_update_dialog(parent: &gtk::Window, version: &str, download_url: String) {
+pub(super) fn show_update_dialog(
+    parent: &gtk::Window,
+    release: &ReleaseMetadata,
+    download_url: String,
+) {
     let Some(window_overlay) = parent.child().and_downcast::<gtk::Overlay>() else {
         return;
     };
@@ -615,6 +767,7 @@ pub(super) fn show_update_dialog(parent: &gtk::Window, version: &str, download_u
     content.add_css_class("update-dialog");
     content.set_halign(gtk::Align::Center);
     content.set_valign(gtk::Align::Center);
+    content.set_size_request(560, -1);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     header.add_css_class("update-dialog-header");
     let symbol = gtk::CenterBox::new();
@@ -623,12 +776,14 @@ pub(super) fn show_update_dialog(parent: &gtk::Window, version: &str, download_u
     symbol.set_valign(gtk::Align::Center);
     symbol.set_center_widget(Some(&crate::assets::primary_icon(icons::DOWNLOADS, 20)));
     let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    let title = gtk::Label::new(Some(&format!("Installing Strata v{version}")));
+    let title = gtk::Label::new(Some(&format!("Strata v{} is available", release.version)));
     title.add_css_class("update-dialog-title");
     title.set_xalign(0.0);
-    let subtitle = gtk::Label::new(Some(
-        "The update is downloaded and verified before installation.",
-    ));
+    let subtitle = gtk::Label::new(Some(&format!(
+        "Installed v{}  →  Available v{}",
+        env!("CARGO_PKG_VERSION"),
+        release.version
+    )));
     subtitle.add_css_class("update-dialog-subtitle");
     subtitle.set_xalign(0.0);
     subtitle.set_wrap(true);
@@ -640,13 +795,49 @@ pub(super) fn show_update_dialog(parent: &gtk::Window, version: &str, download_u
 
     let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
     body.add_css_class("update-dialog-body");
-    let status = gtk::Label::new(Some(&format!("Strata v{version} is ready to download.")));
+    let notes_heading = gtk::Label::new(Some("What’s new"));
+    notes_heading.add_css_class("release-notes-title");
+    notes_heading.set_xalign(0.0);
+    let notes = gtk::Label::new(None);
+    notes.add_css_class("release-notes-content");
+    notes.set_xalign(0.0);
+    notes.set_yalign(0.0);
+    notes.set_wrap(true);
+    notes.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+    notes.set_selectable(true);
+    notes.set_use_markup(true);
+    if release.notes.trim().is_empty() {
+        notes.set_text(
+            "No release notes were provided. Review this release on GitHub before continuing.",
+        );
+    } else {
+        notes.set_markup(&release.notes_markup);
+    }
+    let notes_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .min_content_height(120)
+        .max_content_height(300)
+        .propagate_natural_height(true)
+        .child(&notes)
+        .build();
+    notes_scroll.add_css_class("update-dialog-notes");
+    let fallback = gtk::LinkButton::with_label(&release.url, "View release on GitHub");
+    fallback.add_css_class("release-notes-fallback");
+    fallback.set_halign(gtk::Align::Start);
+    let status = gtk::Label::new(Some(
+        "Review the release notes before downloading the update.",
+    ));
     status.add_css_class("update-dialog-status");
     status.set_xalign(0.0);
+    status.set_wrap(true);
     let progress = gtk::ProgressBar::new();
     progress.add_css_class("update-dialog-progress");
     progress.set_fraction(0.0);
     progress.set_visible(false);
+    body.append(&notes_heading);
+    body.append(&notes_scroll);
+    body.append(&fallback);
     body.append(&status);
     body.append(&progress);
     content.append(&body);
@@ -761,10 +952,10 @@ fn update_check_message(result: &UpdateCheck) -> String {
         UpdateCheck::UpToDate => {
             format!("Up to date — version {}", env!("CARGO_PKG_VERSION"))
         }
-        UpdateCheck::Available { version, url, .. } => format!(
+        UpdateCheck::Available { release, .. } => format!(
             "Update available: <a href=\"{}\">v{}</a>",
-            glib::markup_escape_text(url),
-            glib::markup_escape_text(version),
+            glib::markup_escape_text(&release.url),
+            glib::markup_escape_text(&release.version),
         ),
         UpdateCheck::Failed(message) => {
             format!(

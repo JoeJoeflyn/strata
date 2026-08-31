@@ -11,14 +11,14 @@ use std::{
 use gtk::{gio, glib, prelude::*};
 
 use crate::{
-    adapters::{LocalFileSource, LocalOperationProvider, LocalPreviewProvider},
+    adapters::{LocalFileSource, LocalOperationProvider, LocalPreviewProvider, location_for_file},
     app::{Browser, BrowserEvent},
     model::{EntryKind, FileEntry, Location, MetadataValue},
 };
 
 use super::{
     blur::BlurBin,
-    browser::{BrowserView, PeekBehavior},
+    browser::{BrowserView, PeekBehavior, show_error_dialog},
     browser_modes::{BrowserDensity, BrowserMode},
     motion::{animations_enabled, emphasized_deceleration},
     preview::PreviewDrawer,
@@ -281,21 +281,23 @@ pub fn present_location(application: &gtk::Application, location: Option<PathBuf
     let update_button = sidebar.update_notice.clone();
     let update_area = sidebar.update_area.clone();
     let update_label = sidebar.update_label.clone();
-    let available_update = Rc::new(RefCell::new(None::<(String, String)>));
+    let available_update = Rc::new(RefCell::new(
+        None::<(crate::services::ReleaseMetadata, String)>,
+    ));
     let available_for_click = available_update.clone();
     let update_parent = window.clone().upcast::<gtk::Window>();
     update_button.connect_clicked(move |_| {
-        let Some((version, download_url)) = available_for_click.borrow().clone() else {
+        let Some((release, download_url)) = available_for_click.borrow().clone() else {
             return;
         };
-        super::settings::show_update_dialog(&update_parent, &version, download_url);
+        super::settings::show_update_dialog(&update_parent, &release, download_url);
     });
     let available_for_notice = available_update.clone();
     let update_notice: super::settings::UpdateNoticeHandler = Rc::new(move |release| {
-        if let Some((version, _url, download_url)) = release {
-            update_button.set_tooltip_text(Some(&format!("Install Strata v{version}")));
-            update_label.set_text(&format!("v{version} available"));
-            *available_for_notice.borrow_mut() = Some((version, download_url));
+        if let Some((release, download_url)) = release {
+            update_button.set_tooltip_text(Some(&format!("Install Strata v{}", release.version)));
+            update_label.set_text(&format!("v{} available", release.version));
+            *available_for_notice.borrow_mut() = Some((release, download_url));
             update_area.set_visible(true);
         } else {
             available_for_notice.borrow_mut().take();
@@ -813,6 +815,11 @@ impl SidebarState {
             Location::local(home_directory()),
         );
         self.append_trash_place();
+        self.append_place(
+            crate::assets::icons::NETWORK,
+            "Network",
+            Location::uri("network:///"),
+        );
         self.append_separator();
 
         for place in self.place_order.borrow().clone() {
@@ -846,12 +853,9 @@ impl SidebarState {
             .into_iter()
             .filter(|mount| !mount.is_shadowed() && mount.volume().is_none())
             .map(|mount| {
-                let root = mount.root();
-                let location = root
-                    .path()
-                    .map(Location::local)
-                    .unwrap_or_else(|| Location::uri(root.uri()));
-                (mount.name().to_string(), location)
+                let name = mount.name().to_string();
+                let location = location_for_file(&mount.root());
+                (name, location, mount)
             })
             .collect();
         if !volumes.is_empty() || !mounts.is_empty() {
@@ -860,8 +864,12 @@ impl SidebarState {
             for volume in volumes {
                 self.append_volume(volume);
             }
-            for (name, location) in mounts {
-                self.append_place(crate::assets::icons::HARD_DRIVE, &name, location);
+            for (name, location, mount) in mounts {
+                if is_smb_location(&location) {
+                    self.append_smb_mount(&name, location, mount);
+                } else {
+                    self.append_place(crate::assets::icons::HARD_DRIVE, &name, location);
+                }
             }
         }
         self.sync_active_place();
@@ -1065,11 +1073,7 @@ impl SidebarState {
         let row = sidebar_button(crate::assets::icons::HARD_DRIVE, &name);
         row.set_tooltip_text(Some(&name));
         if let Some(mount) = volume.get_mount() {
-            let root = mount.root();
-            let location = root
-                .path()
-                .map(Location::local)
-                .unwrap_or_else(|| Location::uri(root.uri()));
+            let location = location_for_file(&mount.root());
             self.place_rows.borrow_mut().push((location, row.clone()));
         }
         let weak_browser = Rc::downgrade(&self.browser);
@@ -1110,6 +1114,74 @@ impl SidebarState {
             });
         });
         self.widget.append(&row);
+    }
+
+    fn append_smb_mount(self: &Rc<Self>, name: &str, location: Location, mount: gio::Mount) {
+        let properties_location = location.clone();
+        let row = self.append_place(crate::assets::icons::NETWORK, name, location);
+        let menu = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        menu.add_css_class("folder-context-menu");
+        let properties = sidebar_context_option(crate::assets::icons::INFO, "Properties", false);
+        let disconnect = sidebar_context_option(crate::assets::icons::UNPLUG, "Disconnect", true);
+        disconnect.add_css_class("danger");
+        menu.append(&properties);
+        menu.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+        menu.append(&disconnect);
+        let popover = gtk::Popover::builder()
+            .child(&menu)
+            .autohide(true)
+            .has_arrow(false)
+            .build();
+        popover.add_css_class("folder-context-popover");
+        popover.set_parent(&row);
+
+        let properties_popover = popover.downgrade();
+        let properties_view = self.view.clone();
+        properties.connect_clicked(move |_| {
+            if let Some(popover) = properties_popover.upgrade() {
+                popover.popdown();
+            }
+            properties_view.show_location_properties(&properties_location);
+        });
+
+        let disconnect_popover = popover.downgrade();
+        let parent = self.view.widget();
+        disconnect.connect_clicked(move |_| {
+            if let Some(popover) = disconnect_popover.upgrade() {
+                popover.popdown();
+            }
+            let window = parent.root().and_downcast::<gtk::Window>();
+            let operation = gtk::MountOperation::new(window.as_ref());
+            let mount = mount.clone();
+            let error_parent = parent.clone();
+            glib::MainContext::default().spawn_local(async move {
+                if let Err(error) = mount
+                    .unmount_with_operation_future(gio::MountUnmountFlags::NONE, Some(&operation))
+                    .await
+                    && !error.matches(gio::IOErrorEnum::Cancelled)
+                {
+                    show_error_dialog(&error_parent, "Unable to disconnect", &error.to_string());
+                }
+            });
+        });
+
+        let context = gtk::GestureClick::new();
+        context.set_button(3);
+        let weak_popover = popover.downgrade();
+        context.connect_pressed(move |gesture, _, x, y| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            let Some(popover) = weak_popover.upgrade() else {
+                return;
+            };
+            popover.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+                x.round() as i32,
+                y.round() as i32,
+                1,
+                1,
+            )));
+            popover.popup();
+        });
+        row.add_controller(context);
     }
 
     fn append_pinned_place(self: &Rc<Self>, name: &str, location: Location) {
@@ -1220,6 +1292,13 @@ fn remove_pinned_place(places: &mut Vec<(Location, String)>, location: &Location
     places.len() != original_len
 }
 
+fn is_smb_location(location: &Location) -> bool {
+    location.uri_value().is_some_and(|uri| {
+        uri.get(..4)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("smb:"))
+    })
+}
+
 fn is_standard_place_location(location: &Location) -> bool {
     let Some(path) = location.native_path() else {
         return false;
@@ -1313,11 +1392,7 @@ fn sidebar_button(icon: &str, name: &str) -> gtk::Button {
 }
 
 fn navigate_to_gio_file(browser: &Rc<Browser>, file: &gio::File) {
-    let location = file
-        .path()
-        .map(Location::local)
-        .unwrap_or_else(|| Location::uri(file.uri()));
-    browser.navigate(location);
+    browser.navigate(location_for_file(file));
 }
 
 fn build_sidebar(view: BrowserView) -> SidebarView {
@@ -1453,10 +1528,7 @@ fn parse_pinned_places(contents: &str) -> Vec<(Location, String)> {
             continue;
         }
         let file = gio::File::for_uri(uri);
-        let location = file
-            .path()
-            .map(Location::local)
-            .unwrap_or_else(|| Location::uri(uri));
+        let location = location_for_file(&file);
         if places
             .iter()
             .any(|(existing, _): &(Location, String)| existing == &location)

@@ -3,8 +3,8 @@
 use std::path::Path;
 
 use super::{
-    is_standard_place_location, parse_pinned_places, remove_pinned_place, reorder_places,
-    should_show_empty_trash, should_show_standard_place,
+    is_smb_location, is_standard_place_location, parse_pinned_places, remove_pinned_place,
+    reorder_places, should_show_empty_trash, should_show_standard_place,
 };
 
 #[test]
@@ -74,6 +74,22 @@ fn pinned_places_can_be_removed_by_location() {
 }
 
 #[test]
+fn only_smb_locations_are_disconnectable_network_mounts() {
+    assert!(is_smb_location(&crate::model::Location::uri(
+        "smb://server/share"
+    )));
+    assert!(is_smb_location(&crate::model::Location::uri(
+        "SMB://server/share"
+    )));
+    assert!(!is_smb_location(&crate::model::Location::uri(
+        "sftp://server/home"
+    )));
+    assert!(!is_smb_location(&crate::model::Location::local(
+        "/mnt/share"
+    )));
+}
+
+#[test]
 fn home_is_already_a_standard_sidebar_location() {
     assert!(is_standard_place_location(&crate::model::Location::local(
         super::home_directory()
@@ -101,8 +117,8 @@ fn empty_trash_button_only_shows_at_trash_root() {
     assert!(!should_show_empty_trash(Some(crate::model::Location::uri(
         "trash:///folder"
     ))));
-    assert!(!should_show_empty_trash(Some(crate::model::Location::local(
-        "/home/user"
-    ))));
+    assert!(!should_show_empty_trash(Some(
+        crate::model::Location::local("/home/user")
+    )));
     assert!(!should_show_empty_trash(None));
 }

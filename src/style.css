@@ -784,6 +784,7 @@ headerbar menubutton.header-action > button:focus-visible image {
 .release-notes-bullet {
   color: @theme_accent;
   font-weight: 700;
+  margin-top: 2px;
 }
 
 .release-notes-content link,

@@ -2521,6 +2521,9 @@ impl ViewState {
             BrowserEvent::NavigationRejected { message } => {
                 show_error_dialog(&self.overlay, "Unable to open directory", &message);
             }
+            BrowserEvent::EmptyTrashRequested => {
+                self.load_trash_summary();
+            }
         }
         self.refresh_active_path_rows();
     }
@@ -2598,6 +2601,9 @@ impl ViewState {
         header.append(&spinner);
         let header_actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header_actions.add_css_class("column-header-actions");
+        let empty_trash = empty_trash_button(&self.browser);
+        empty_trash.set_visible(is_trash_root(&location));
+        header_actions.append(&empty_trash);
         header_actions.append(&column_sort_direction_toggle(&self.browser, depth));
         header_actions.append(&column_sort_menu(&self.browser, depth));
 
@@ -4868,6 +4874,25 @@ fn sync_sort_direction_toggle(button: &gtk::Button, icon: &gtk::Image, direction
     }));
 }
 
+pub(super) fn empty_trash_button(browser: &Rc<Browser>) -> gtk::Button {
+    let button = gtk::Button::builder()
+        .tooltip_text("Empty Trash")
+        .visible(false)
+        .build();
+    button.set_child(Some(&crate::assets::text_icon(
+        crate::assets::icons::TRASH,
+        16,
+    )));
+    button.add_css_class("column-header-action");
+    let weak_browser = Rc::downgrade(browser);
+    button.connect_clicked(move |_| {
+        if let Some(browser) = weak_browser.upgrade() {
+            browser.request_empty_trash();
+        }
+    });
+    button
+}
+
 fn column_menu_option(label: &str, selected: bool) -> (gtk::Button, gtk::Image) {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let check = crate::assets::primary_icon(crate::assets::icons::CHECK, 16);
@@ -5182,7 +5207,7 @@ fn gio_file_for_location(location: &Location) -> gio::File {
         .unwrap_or_else(|| gio::File::for_uri(location.uri_value().unwrap_or_default()))
 }
 
-fn is_trash_root(location: &Location) -> bool {
+pub(super) fn is_trash_root(location: &Location) -> bool {
     location.uri_value() == Some("trash:///")
 }
 

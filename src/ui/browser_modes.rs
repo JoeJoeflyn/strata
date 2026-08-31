@@ -909,6 +909,11 @@ fn grid_controls(browser: &Rc<Browser>, depth: usize, thumbnail_size: i32) -> Gr
         crate::assets::icons::PICTURES,
         16,
     )));
+    let empty_trash = super::browser::empty_trash_button(browser);
+    if let Some(location) = browser.location_at(depth) {
+        empty_trash.set_visible(super::browser::is_trash_root(&location));
+    }
+    actions.append(&empty_trash);
     actions.append(&thumbnail_menu);
     actions.append(&super::browser::column_sort_direction_toggle(
         browser, depth,
@@ -1504,6 +1509,11 @@ fn build_explorer_pane(
     let navigation = explorer_navigation(&browser);
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     actions.add_css_class("grid-header-actions");
+    let empty_trash = super::browser::empty_trash_button(&browser);
+    if let Some(location) = browser.location_at(depth) {
+        empty_trash.set_visible(super::browser::is_trash_root(&location));
+    }
+    actions.append(&empty_trash);
     let (filter_entry, filter_revealer, filter_button) =
         filter_controls("Filter explorer (Ctrl+F)");
     actions.append(&filter_button);

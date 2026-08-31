@@ -131,12 +131,11 @@ impl ModeViews {
         explorer_root.add_css_class("mode-explorer");
         explorer_root.set_hexpand(true);
         explorer_root.set_vexpand(true);
-        // Explorer columns have user-resizable fixed widths. Keep their leading edge visible when
-        // the window is narrower than their combined width, and scroll the headings and rows as
-        // one surface instead of letting the stack center and clip the oversized pane.
+        // The explorer pane header belongs to the viewport, while its user-resizable table
+        // columns scroll independently below it.
         let explorer_scroll = gtk::ScrolledWindow::builder()
             .child(&explorer_root)
-            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .vscrollbar_policy(gtk::PolicyType::Never)
             .hexpand(true)
             .vexpand(true)
@@ -1552,7 +1551,7 @@ fn build_explorer_pane(
     let syncing_selection = Rc::new(Cell::new(false));
 
     let columns = ExplorerColumnLayout::new();
-    content.append(&explorer_headings(&browser, depth, columns.clone()));
+    let headings = explorer_headings(&browser, depth, columns.clone());
 
     let factory = gtk::SignalListItemFactory::new();
     let bound_items: Rc<RefCell<Vec<BoundModeItem>>> = Rc::new(RefCell::new(Vec::new()));
@@ -1758,15 +1757,27 @@ fn build_explorer_pane(
     );
     let scroll = gtk::ScrolledWindow::builder()
         .child(&view)
+        .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
         .build();
-    content.append(&collection_with_marquee(
+    let table = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    table.set_vexpand(true);
+    table.append(&headings);
+    table.append(&collection_with_marquee(
         view.upcast_ref(),
         scroll,
         &selection,
         bound_items.clone(),
         "explorer-row",
     ));
+    let table_scroll = gtk::ScrolledWindow::builder()
+        .child(&table)
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .hexpand(true)
+        .vexpand(true)
+        .build();
+    content.append(&table_scroll);
     Pane {
         depth,
         shell,

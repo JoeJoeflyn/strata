@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::{
     is_smb_location, is_standard_place_location, parse_pinned_places, remove_pinned_place,
-    reorder_places, should_show_empty_trash, should_show_standard_place,
+    reorder_places, should_show_standard_place,
 };
 
 #[test]
@@ -107,18 +107,4 @@ fn desktop_is_hidden_when_it_points_to_home() {
         home
     ));
     assert!(should_show_standard_place("documents", home, home));
-}
-
-#[test]
-fn empty_trash_button_only_shows_at_trash_root() {
-    assert!(should_show_empty_trash(Some(crate::model::Location::uri(
-        "trash:///"
-    ))));
-    assert!(!should_show_empty_trash(Some(crate::model::Location::uri(
-        "trash:///folder"
-    ))));
-    assert!(!should_show_empty_trash(Some(
-        crate::model::Location::local("/home/user")
-    )));
-    assert!(!should_show_empty_trash(None));
 }

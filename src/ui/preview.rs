@@ -439,20 +439,23 @@ impl PreviewState {
                 let media = gtk::MediaFile::for_input_stream(&stream);
                 let video = gtk::Video::for_media_stream(Some(&media));
                 video.add_css_class("preview-media");
-                video.set_autoplay(false);
-                video.set_loop(false);
+                let is_gif = preview.content_type == "image/gif";
+                video.set_autoplay(is_gif);
+                video.set_loop(is_gif);
                 video.set_hexpand(true);
                 video.set_vexpand(true);
                 self.media.replace(Some(video.clone()));
                 self.content.append(&video);
-                let notice = gtk::Label::new(Some(
-                    "Preview limited to the first 30 seconds. Open the file to play the full video.",
-                ));
-                notice.add_css_class("preview-note");
-                notice.set_justify(gtk::Justification::Center);
-                notice.set_wrap(true);
-                notice.set_xalign(0.5);
-                self.content.append(&notice);
+                if !is_gif {
+                    let notice = gtk::Label::new(Some(
+                        "Preview limited to the first 30 seconds. Open the file to play the full video.",
+                    ));
+                    notice.add_css_class("preview-note");
+                    notice.set_justify(gtk::Justification::Center);
+                    notice.set_wrap(true);
+                    notice.set_xalign(0.5);
+                    self.content.append(&notice);
+                }
             }
             PreviewContent::Image | PreviewContent::Media => {
                 self.show_message(

@@ -1174,19 +1174,24 @@ impl ViewState {
         });
 
         let escape = gtk::EventControllerKey::new();
+        escape.set_propagation_phase(gtk::PropagationPhase::Capture);
         let escaped_layer = layer.clone();
         let escaped_overlay = window_overlay;
         let escaped_root = blurred_root;
+        let enter_replace = replace.clone();
         escape.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
                 dismiss_modal_layer(&escaped_layer, &escaped_overlay, escaped_root.as_ref());
+                glib::Propagation::Stop
+            } else if key == gtk::gdk::Key::Return || key == gtk::gdk::Key::KP_Enter {
+                enter_replace.emit_clicked();
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
             }
         });
         layer.add_controller(escape);
-        cancel.grab_focus();
+        replace.grab_focus();
     }
 
     fn copy_entries(&self, entries: &[FileEntry]) {
@@ -1908,6 +1913,7 @@ impl ViewState {
             browser.focus_active();
         });
         let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let escaped_layer = layer.clone();
         let escaped_overlay = window_overlay;
         let escaped_root = blurred_root;
@@ -1918,6 +1924,9 @@ impl ViewState {
             if key == gtk::gdk::Key::Escape {
                 dismiss_modal_layer(&escaped_layer, &escaped_overlay, escaped_root.as_ref());
                 escaped_browser.focus_active();
+                glib::Propagation::Stop
+            } else if key == gtk::gdk::Key::Return || key == gtk::gdk::Key::KP_Enter {
+                focused_confirm.emit_clicked();
                 glib::Propagation::Stop
             } else if !modifiers
                 .intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK)
@@ -1933,11 +1942,7 @@ impl ViewState {
             }
         });
         layer.add_controller(keys);
-        let initial_focus = if permanent {
-            cancel.clone()
-        } else {
-            confirm.clone()
-        };
+        let initial_focus = confirm.clone();
         glib::idle_add_local_once(move || {
             initial_focus.grab_focus();
             if let Some(window) = initial_focus.root().and_downcast::<gtk::Window>() {

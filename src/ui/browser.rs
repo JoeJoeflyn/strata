@@ -68,6 +68,7 @@ struct ColumnView {
     bound_rows: Rc<RefCell<Vec<BoundRow>>>,
     entry_count: Rc<Cell<usize>>,
     spinner: gtk::Spinner,
+    empty_trash_button: Option<gtk::Button>,
     new_entry_row: gtk::Box,
     new_entry_icon: gtk::Image,
     new_entry_entry: gtk::Entry,
@@ -1669,6 +1670,15 @@ impl ViewState {
     }
 
     fn load_trash_summary(self: &Rc<Self>) {
+        let trash_empty = self
+            .columns
+            .borrow()
+            .iter()
+            .find(|column| column.empty_trash_button.is_some())
+            .is_some_and(|column| column.entry_count.get() == 0);
+        if trash_empty {
+            return;
+        }
         let Some(window_overlay) = self
             .overlay
             .root()
@@ -3128,6 +3138,7 @@ impl ViewState {
                     let count = column.entry_count.get() + entry_count;
                     column.entry_count.set(count);
                     set_filter_placeholder(&column, count);
+                    update_empty_trash_sensitivity(&column, count);
                     crate::metrics::mark_batch_rendered(entry_count, render_started);
                 }
             }
@@ -3143,6 +3154,7 @@ impl ViewState {
                     column.model.splice(0, column.model.n_items(), &labels);
                     column.entry_count.set(entries.len());
                     set_filter_placeholder(&column, entries.len());
+                    update_empty_trash_sensitivity(&column, entries.len());
                 }
             }
             BrowserEvent::SortingStarted { depth } => {
@@ -3191,6 +3203,7 @@ impl ViewState {
                     } else {
                         column.presentation.show_content();
                     }
+                    update_empty_trash_sensitivity(column, count);
                 }
             }
             BrowserEvent::ColumnReloaded { depth } => {
@@ -3207,11 +3220,13 @@ impl ViewState {
                 if let Some(column) = self.columns.borrow().get(depth) {
                     column.spinner.stop();
                     column.spinner.set_visible(false);
-                    if column.entry_count.get() == 0 {
+                    let count = column.entry_count.get();
+                    if count == 0 {
                         column.presentation.show_empty();
                     } else {
                         column.presentation.show_content();
                     }
+                    update_empty_trash_sensitivity(column, count);
                 }
                 if self.browser.active_depth() == Some(depth)
                     && let Some(name) = self.pending_select.take()
@@ -3491,7 +3506,9 @@ impl ViewState {
         let header_actions = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header_actions.add_css_class("column-header-actions");
         let empty_trash = empty_trash_button(&self.browser);
-        empty_trash.set_visible(is_trash_root(location));
+        let is_trash = is_trash_root(location);
+        empty_trash.set_visible(is_trash);
+        empty_trash.set_sensitive(false);
         header_actions.append(&empty_trash);
         header_actions.append(&column_sort_direction_toggle(&self.browser, depth));
         header_actions.append(&column_sort_menu(&self.browser, depth));
@@ -4279,6 +4296,7 @@ impl ViewState {
             bound_rows,
             entry_count,
             spinner,
+            empty_trash_button: is_trash.then_some(empty_trash),
             new_entry_row,
             new_entry_icon,
             new_entry_entry,
@@ -5909,6 +5927,12 @@ fn sync_sort_direction_toggle(button: &gtk::Button, icon: &gtk::Image, direction
     } else {
         "Ascending — click to reverse"
     }));
+}
+
+fn update_empty_trash_sensitivity(column: &ColumnView, count: usize) {
+    if let Some(button) = &column.empty_trash_button {
+        button.set_sensitive(count > 0);
+    }
 }
 
 pub(super) fn empty_trash_button(browser: &Rc<Browser>) -> gtk::Button {

@@ -196,7 +196,7 @@ impl Default for PeekBehavior {
         Self {
             open_delay: Duration::from_millis(180),
             close_delay: Duration::from_millis(80),
-            fade_duration: Duration::from_millis(100),
+            fade_duration: Duration::from_millis(150),
             item_limit: 8,
         }
     }
@@ -4450,21 +4450,24 @@ impl ViewState {
             return;
         };
         content.add_css_class("peek-popover");
-        let right = bounds.x() + bounds.width() + 4.0;
+        let gap = 8.0;
+        let right = bounds.x() + bounds.width() + gap;
         let left = (bounds.x() - 260.0).max(0.0);
-        let x = if right + 256.0 <= self.overlay.width() as f32 {
-            right
-        } else {
-            left
-        };
+        let positioned_right = right + 256.0 <= self.overlay.width() as f32;
+        let x = if positioned_right { right } else { left };
         let transition_duration = self
             .peek_behavior
             .fade_duration
             .as_millis()
             .min(u128::from(u32::MAX)) as u32;
+        let transition_type = if positioned_right {
+            gtk::RevealerTransitionType::SlideRight
+        } else {
+            gtk::RevealerTransitionType::SlideLeft
+        };
         let revealer = gtk::Revealer::builder()
             .child(&content)
-            .transition_type(gtk::RevealerTransitionType::Crossfade)
+            .transition_type(transition_type)
             .transition_duration(transition_duration)
             .reveal_child(false)
             .halign(gtk::Align::Start)

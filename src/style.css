@@ -1479,9 +1479,9 @@ paned > separator {
 
 .peek-popover {
   background: @theme_surface;
-  border: 1px solid alpha(@theme_border, 0.6);
+  border: 1px solid alpha(@theme_border, 0.8);
   border-radius: 9px;
-  box-shadow: 0 0 14px alpha(@theme_accent, 0.24);
+  box-shadow: 0 0 14px alpha(@theme_accent, 0.24), 0 6px 20px alpha(@theme_bg, 0.45);
   color: @theme_text;
   padding: 0;
 }
@@ -1489,13 +1489,15 @@ paned > separator {
 .peek-popover .column-header {
   background: @theme_surface;
   border-bottom: 1px solid alpha(@theme_border, 0.24);
-  border-radius: 6px 6px 0 0;
+  border-radius: 9px 9px 0 0;
+  color: @theme_dim_text;
 }
 
 .peek-popover scrolledwindow,
 .peek-popover viewport,
 .peek-popover listview {
   background: @theme_surface;
+  padding: 6px 0;
 }
 
 .column-header {

@@ -601,11 +601,11 @@ fn install_keyboard_navigation(
         {
             return glib::Propagation::Stop;
         }
-        if !control && !alt && !view.item_view_has_focus() && !header_left_boundary {
-            return glib::Propagation::Proceed;
-        }
         if key == gtk::gdk::Key::Delete && !view.filter_has_focus() && view.confirm_delete(shift) {
             return glib::Propagation::Stop;
+        }
+        if !control && !alt && !view.item_view_has_focus() && !header_left_boundary {
+            return glib::Propagation::Proceed;
         }
         if key == gtk::gdk::Key::space && !alt && !control {
             preview.toggle(browser.focused_entry());

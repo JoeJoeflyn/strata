@@ -65,7 +65,7 @@ pub(crate) fn content_family(content_type: &str) -> PreviewContent {
             pages: 0,
         }
     } else if content_type == "image/gif" {
-        PreviewContent::SandboxedMedia { data: Vec::new() }
+        PreviewContent::Media
     } else if content_type.starts_with("image/") {
         PreviewContent::Image
     } else if content_type.starts_with("audio/") || content_type.starts_with("video/") {

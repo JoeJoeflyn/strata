@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::{fs, rc::Rc};
+use std::rc::Rc;
 
 use gtk::{gio, glib, prelude::*};
 
@@ -66,36 +66,6 @@ impl PreviewProvider for LocalPreviewProvider {
                 | PreviewContent::SandboxedMedia { .. }
                 | PreviewContent::Unsupported => None,
             };
-            if matches!(content, PreviewContent::SandboxedMedia { .. }) {
-                let Some(path) = entry.location.native_path().map(ToOwned::to_owned) else {
-                    emit(PreviewEvent::Failed {
-                        request_id,
-                        entry,
-                        message: "Only local files can be previewed safely".to_owned(),
-                    });
-                    return;
-                };
-                let cancellation = cancellation_for_task.clone();
-                content = match gio::spawn_blocking(move || {
-                    if cancellation.is_cancelled() {
-                        return Err("Preview cancelled".to_owned());
-                    }
-                    fs::read(&path).map_err(|error| error.to_string())
-                })
-                .await
-                {
-                    Ok(Ok(data)) => PreviewContent::SandboxedMedia { data },
-                    Ok(Err(message)) => {
-                        emit(PreviewEvent::Failed {
-                            request_id,
-                            entry,
-                            message,
-                        });
-                        return;
-                    }
-                    Err(_) => return,
-                };
-            }
             if let Some(operation) = operation {
                 let Some(path) = entry.location.native_path().map(ToOwned::to_owned) else {
                     emit(PreviewEvent::Failed {

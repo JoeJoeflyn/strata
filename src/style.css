@@ -1444,6 +1444,10 @@ paned > separator {
   padding: 24px;
 }
 
+.preview-feedback-icon {
+  margin-bottom: 5px;
+}
+
 .preview-feedback-title {
   color: @theme_text;
   font-weight: 700;

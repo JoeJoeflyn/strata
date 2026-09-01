@@ -57,6 +57,7 @@ pub mod icons {
     pub const SLIDERS: &str = "strata-sliders-horizontal";
     pub const TERMINAL: &str = "strata-terminal";
     pub const TRASH: &str = "strata-trash";
+    pub const TRIANGLE_ALERT: &str = "strata-triangle-alert";
     pub const UNPLUG: &str = "strata-unplug";
     pub const VIDEOS: &str = "strata-video";
     pub const X: &str = "strata-x";

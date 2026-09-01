@@ -776,16 +776,26 @@ impl PreviewState {
     fn show_media_error(&self, error: &glib::Error) {
         let message = error.message();
         let (title, detail) = media_error_feedback(message);
-        self.show_message(title, &detail);
+        self.show_message_with_icon(title, &detail, Some(crate::assets::icons::TRIANGLE_ALERT));
     }
 
     fn show_message(&self, title: &str, detail: &str) {
+        self.show_message_with_icon(title, detail, None);
+    }
+
+    fn show_message_with_icon(&self, title: &str, detail: &str, icon: Option<&str>) {
         self.clear_content();
         let box_ = gtk::Box::new(gtk::Orientation::Vertical, 7);
         box_.add_css_class("preview-feedback");
         box_.set_halign(gtk::Align::Center);
         box_.set_valign(gtk::Align::Center);
         box_.set_vexpand(true);
+        if let Some(icon) = icon {
+            let icon = crate::assets::primary_icon(icon, 34);
+            icon.add_css_class("preview-feedback-icon");
+            icon.set_halign(gtk::Align::Center);
+            box_.append(&icon);
+        }
         let heading = gtk::Label::new(Some(title));
         heading.add_css_class("preview-feedback-title");
         let detail = gtk::Label::new(Some(detail));

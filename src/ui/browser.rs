@@ -1375,8 +1375,12 @@ impl ViewState {
         let suggestions_error = error.clone();
         let changed_confirm = confirm.clone();
         let changed_creation = pending_creation.clone();
-        let search_closed =
-            setup_transfer_search(&field, &suggestions_box, &generation, move |field| {
+        setup_transfer_search(
+            &field,
+            &suggestions_box,
+            &generation,
+            base.clone(),
+            move |field| {
                 field.remove_css_class("error");
                 suggestions_error.set_visible(false);
                 suggestions_error.remove_css_class("warning");
@@ -1387,7 +1391,8 @@ impl ViewState {
                 } else {
                     "Copy here"
                 });
-            });
+            },
+        );
 
         let initial_text = folder_input_path(&base);
         let dirty_field = field.clone();
@@ -1405,10 +1410,8 @@ impl ViewState {
         let cancel_overlay = window_overlay.clone();
         let cancel_root = blurred_root.clone();
         let cancel_creating = creating_destination.clone();
-        let cancel_closed = search_closed.clone();
         cancel.connect_clicked(move |_| {
             if !cancel_creating.get() {
-                cancel_closed.set(true);
                 dismiss_modal_layer(&cancel_layer, &cancel_overlay, cancel_root.as_ref());
             }
         });
@@ -1416,10 +1419,8 @@ impl ViewState {
         let close_overlay = window_overlay.clone();
         let close_root = blurred_root.clone();
         let close_creating = creating_destination.clone();
-        let close_closed = search_closed.clone();
         close.connect_clicked(move |_| {
             if !close_creating.get() {
-                close_closed.set(true);
                 dismiss_modal_layer(&close_layer, &close_overlay, close_root.as_ref());
             }
         });
@@ -2455,11 +2456,16 @@ impl ViewState {
         let generation = Rc::new(Cell::new(0_u64));
         let suggestions_box = suggestions.clone();
         let extract_error = error.clone();
-        let search_closed =
-            setup_transfer_search(&field, &suggestions_box, &generation, move |field| {
+        setup_transfer_search(
+            &field,
+            &suggestions_box,
+            &generation,
+            base.clone(),
+            move |field| {
                 field.remove_css_class("error");
                 extract_error.set_visible(false);
-            });
+            },
+        );
 
         let extract_state = self.clone();
         let confirm_field = field.clone();
@@ -2467,7 +2473,6 @@ impl ViewState {
         let confirm_base = base.clone();
         let extract_entry = entry.clone();
         let dismiss_for_confirm = dismiss.clone();
-        let confirm_closed = search_closed.clone();
         confirm.connect_clicked(move |_| {
             let path =
                 resolve_destination_path(&confirm_field.text(), &confirm_base, &glib::home_dir());
@@ -2497,7 +2502,6 @@ impl ViewState {
             extract_state
                 .browser
                 .extract(extract_entry.clone(), dest, None);
-            confirm_closed.set(true);
             dismiss_for_confirm();
         });
 
@@ -3429,9 +3433,7 @@ impl ViewState {
                         let weak = Rc::downgrade(self);
                         glib::idle_add_local_once(move || {
                             if let Some(state) = weak.upgrade() {
-                                for name in &names {
-                                    state.browser.select_entry_by_name(name);
-                                }
+                                state.browser.select_entries_by_name(&names);
                             }
                         });
                     }
@@ -5833,18 +5835,23 @@ fn setup_transfer_search(
     field: &gtk::Entry,
     suggestions: &gtk::Box,
     generation: &Rc<Cell<u64>>,
+    base: std::path::PathBuf,
     on_changed: impl Fn(&gtk::Entry) + 'static,
-) -> Rc<Cell<bool>> {
+) {
     let (search_handle, search_receiver) = index_tree(glib::home_dir());
     let search_handle = Rc::new(search_handle);
-    let search_closed = Rc::new(Cell::new(false));
+    let query_handle = Rc::downgrade(&search_handle);
     let search_mode = Rc::new(Cell::new(false));
-    let poll_suggestions = suggestions.clone();
-    let poll_field = field.clone();
-    let poll_closed = search_closed.clone();
+    let poll_suggestions = suggestions.downgrade();
+    let poll_field = field.downgrade();
     let poll_mode = search_mode.clone();
     let _poll = glib::timeout_add_local(Duration::from_millis(16), move || {
-        if poll_closed.get() {
+        let _keep_search_alive = &search_handle;
+        let (Some(suggestions), Some(field)) = (poll_suggestions.upgrade(), poll_field.upgrade())
+        else {
+            return glib::ControlFlow::Break;
+        };
+        if field.root().is_none() {
             return glib::ControlFlow::Break;
         }
         if !poll_mode.get() {
@@ -5861,9 +5868,9 @@ fn setup_transfer_search(
             }
         }
         if let Some(SearchEvent::Results { query, items, .. }) = latest
-            && query == poll_field.text().trim()
+            && query == field.text().trim()
         {
-            render_transfer_suggestions(&poll_suggestions, items, &poll_field);
+            render_transfer_suggestions(&suggestions, items, &field);
         }
         glib::ControlFlow::Continue
     });
@@ -5872,19 +5879,21 @@ fn setup_transfer_search(
     field.connect_changed(move |field| {
         on_changed(field);
         let input = field.text().to_string();
+        let request = generation_clone.get().saturating_add(1);
+        generation_clone.set(request);
         let looks_like_path = input.trim().contains(std::path::MAIN_SEPARATOR)
             || input.trim().starts_with('~')
             || input.trim().is_empty();
         if looks_like_path {
             search_mode.set(false);
-            let request = generation_clone.get().saturating_add(1);
-            generation_clone.set(request);
             let gen_check = generation_clone.clone();
             let home = glib::home_dir();
+            let base = base.clone();
             let field_clone = field.clone();
             let suggestions_clone = suggestions_clone.clone();
             glib::MainContext::default().spawn_local(async move {
-                let matches = gio::spawn_blocking(move || path_suggestions(&input, &home)).await;
+                let matches =
+                    gio::spawn_blocking(move || path_suggestions(&input, &base, &home)).await;
                 if gen_check.get() != request {
                     return;
                 }
@@ -5904,10 +5913,11 @@ fn setup_transfer_search(
             });
         } else {
             search_mode.set(true);
-            search_handle.query(&input);
+            if let Some(search_handle) = query_handle.upgrade() {
+                search_handle.query(&input);
+            }
         }
     });
-    search_closed
 }
 
 fn folder_input_path(path: &Path) -> String {
@@ -5935,14 +5945,14 @@ fn resolve_destination_path(input: &str, base: &Path, home: &Path) -> std::path:
     }
 }
 
-fn path_suggestions(input: &str, home: &Path) -> Vec<std::path::PathBuf> {
-    let resolved = resolve_destination_path(input, home, home);
+fn path_suggestions(input: &str, base: &Path, home: &Path) -> Vec<std::path::PathBuf> {
+    let resolved = resolve_destination_path(input, base, home);
     let trailing_separator = input.trim_end().ends_with(std::path::MAIN_SEPARATOR);
     let (directory, prefix) = if trailing_separator {
         (resolved, String::new())
     } else {
         (
-            resolved.parent().unwrap_or(home).to_path_buf(),
+            resolved.parent().unwrap_or(base).to_path_buf(),
             resolved
                 .file_name()
                 .map(|name| name.to_string_lossy().to_lowercase())

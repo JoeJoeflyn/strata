@@ -470,6 +470,22 @@ fn restored_sorting_applies_to_the_initial_navigation_load() {
 }
 
 #[test]
+fn selecting_entries_by_name_preserves_the_full_matching_selection() {
+    let browser = Browser::new(Rc::new(RestoredSortingSource));
+    browser.navigate(Location::local("/fixture"));
+
+    browser.select_entries_by_name(&["small".to_owned(), "large".to_owned()]);
+
+    let snapshot = browser.column_snapshot(0).expect("initial column");
+    let selected_names: Vec<_> = snapshot
+        .selected_positions
+        .iter()
+        .map(|&position| snapshot.entries[position].display_name.as_str())
+        .collect();
+    assert_eq!(selected_names, ["large", "small"]);
+}
+
+#[test]
 fn navigation_events_are_delivered_to_every_observer() {
     let browser = Browser::new(Rc::new(FakeFileSource));
     let first_reset = Rc::new(Cell::new(false));

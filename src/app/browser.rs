@@ -2,6 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     path::PathBuf,
     rc::{Rc, Weak},
     time::Duration,
@@ -1415,25 +1416,36 @@ impl Browser {
         }
     }
 
-    pub fn select_entry_by_name(self: &Rc<Self>, name: &str) {
+    pub fn select_entries_by_name(self: &Rc<Self>, names: &[String]) {
         let Some(depth) = self.active_depth() else {
             return;
         };
+        let requested: HashSet<&str> = names.iter().map(String::as_str).collect();
         let state = self.state.borrow();
         let Some(column) = state.columns.get(depth) else {
             return;
         };
-        let position = column.entries.iter().position(|e| e.display_name == name);
+        let positions: Vec<usize> = column
+            .entries
+            .iter()
+            .enumerate()
+            .filter_map(|(position, entry)| {
+                requested
+                    .contains(entry.display_name.as_str())
+                    .then_some(position)
+            })
+            .collect();
         drop(state);
-        if let Some(position) = position {
-            self.set_selection(depth, &[position], Some(position));
-            self.emit(BrowserEvent::SelectionSetChanged {
-                depth,
-                positions: vec![position],
-                focused: position,
-                take_focus: true,
-            });
-        }
+        let Some(&focused) = positions.last() else {
+            return;
+        };
+        self.set_selection(depth, &positions, Some(focused));
+        self.emit(BrowserEvent::SelectionSetChanged {
+            depth,
+            positions,
+            focused,
+            take_focus: true,
+        });
     }
 
     fn handle_directory_change(

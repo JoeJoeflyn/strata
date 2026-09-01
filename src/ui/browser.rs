@@ -6259,7 +6259,25 @@ pub(super) fn modal_layer(
         }
     });
     layer.add_controller(click);
+    animate_in(&layer);
     layer
+}
+
+pub(super) fn animate_in(layer: &gtk::Box) {
+    layer.remove_css_class("dismissing");
+    layer.set_sensitive(true);
+    layer.add_css_class("modal-hidden");
+    let weak = layer.downgrade();
+    glib::timeout_add_local_once(Duration::from_millis(16), move || {
+        if let Some(layer) = weak.upgrade() {
+            layer.remove_css_class("modal-hidden");
+        }
+    });
+}
+
+pub(super) fn animate_out(layer: &gtk::Box, on_done: impl FnOnce() + 'static) {
+    layer.add_css_class("modal-hidden");
+    glib::timeout_add_local_once(Duration::from_millis(200), on_done);
 }
 
 pub(super) fn dismiss_modal_layer(
@@ -6267,10 +6285,21 @@ pub(super) fn dismiss_modal_layer(
     overlay: &gtk::Overlay,
     root: Option<&BlurBin>,
 ) {
-    overlay.remove_overlay(layer);
-    if let Some(root) = root {
-        root.set_blurred(false);
+    if layer.has_css_class("dismissing") {
+        return;
     }
+    layer.add_css_class("dismissing");
+    layer.set_sensitive(false);
+    let overlay = overlay.clone();
+    let layer_for_anim = layer.clone();
+    let layer = layer.clone();
+    let root = root.cloned();
+    animate_out(&layer_for_anim, move || {
+        overlay.remove_overlay(&layer);
+        if let Some(root) = root {
+            root.set_blurred(false);
+        }
+    });
 }
 
 fn gio_file_for_location(location: &Location) -> gio::File {

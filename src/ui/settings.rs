@@ -328,9 +328,22 @@ pub fn build_layer(
 }
 
 fn hide(layer: &gtk::Box, button: &gtk::Button, root: &BlurBin) {
-    layer.set_visible(false);
-    root.set_blurred(false);
-    button.remove_css_class("active");
+    if layer.has_css_class("dismissing") {
+        return;
+    }
+    layer.add_css_class("dismissing");
+    layer.set_sensitive(false);
+    let layer_for_anim = layer.clone();
+    let layer = layer.clone();
+    let root = root.clone();
+    let button = button.clone();
+    super::browser::animate_out(&layer_for_anim, move || {
+        layer.set_visible(false);
+        layer.remove_css_class("dismissing");
+        layer.set_sensitive(true);
+        root.set_blurred(false);
+        button.remove_css_class("active");
+    });
 }
 
 fn general_page(browser: &BrowserView, manager: Rc<ThemeManager>) -> gtk::Widget {

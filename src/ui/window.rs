@@ -855,6 +855,7 @@ fn show_settings(layer: &gtk::Box, button: &gtk::Button, root: &BlurBin) {
     layer.set_visible(true);
     layer.grab_focus();
     button.add_css_class("active");
+    super::browser::animate_in(layer);
 }
 
 fn append_menu_heading(container: &gtk::Box, text: &str) {

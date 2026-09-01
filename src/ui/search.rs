@@ -234,6 +234,7 @@ impl SearchDialog {
         self.state.status.set_visible(true);
         self.state.status.set_text("Type to search the whole tree");
         self.state.layer.set_visible(true);
+        super::browser::animate_in(&self.state.layer);
         self.state.field.grab_focus();
 
         let (handle, receiver) = index_tree(root);
@@ -445,8 +446,19 @@ fn hide(state: &SearchState) {
     state.generation.set(state.generation.get() + 1);
     state.search.borrow_mut().take();
     clear_results(state);
-    state.layer.set_visible(false);
-    (state.dismiss)();
+    if state.layer.has_css_class("dismissing") {
+        return;
+    }
+    state.layer.add_css_class("dismissing");
+    state.layer.set_sensitive(false);
+    let layer = state.layer.clone();
+    let dismiss = state.dismiss.clone();
+    super::browser::animate_out(&state.layer, move || {
+        layer.set_visible(false);
+        layer.remove_css_class("dismissing");
+        layer.set_sensitive(true);
+        dismiss();
+    });
 }
 
 fn clear_results(state: &SearchState) {

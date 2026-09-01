@@ -445,7 +445,19 @@ impl PreviewState {
                 video.set_hexpand(true);
                 video.set_vexpand(true);
                 self.media.replace(Some(video.clone()));
+                let weak = Rc::downgrade(self);
+                media.connect_error_notify(move |media| {
+                    let Some(error) = media.error() else {
+                        return;
+                    };
+                    if let Some(state) = weak.upgrade() {
+                        state.show_media_error(&error);
+                    }
+                });
                 self.content.append(&video);
+                if let Some(error) = media.error() {
+                    self.show_media_error(&error);
+                }
                 if !is_gif {
                     let notice = gtk::Label::new(Some(
                         "Preview limited to the first 30 seconds. Open the file to play the full video.",
@@ -761,6 +773,12 @@ impl PreviewState {
         self.content.append(&spinner);
     }
 
+    fn show_media_error(&self, error: &glib::Error) {
+        let message = error.message();
+        let (title, detail) = media_error_feedback(message);
+        self.show_message(title, &detail);
+    }
+
     fn show_message(&self, title: &str, detail: &str) {
         self.clear_content();
         let box_ = gtk::Box::new(gtk::Orientation::Vertical, 7);
@@ -778,6 +796,30 @@ impl PreviewState {
         box_.append(&detail);
         self.content.append(&box_);
     }
+}
+
+fn media_error_feedback(message: &str) -> (&'static str, String) {
+    let normalized = message.to_ascii_lowercase();
+    if [
+        "gstreamer",
+        "plug-in",
+        "plugin",
+        "missing decoder",
+        "no decoder",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+    {
+        return (
+            "Additional media support required",
+            "On Arch or Omarchy, install gst-plugins-good and gst-libav, then restart Strata."
+                .to_owned(),
+        );
+    }
+    (
+        "Preview unavailable",
+        format!("Unable to play this media preview: {message}"),
+    )
 }
 
 fn metadata_value(label: &str) -> (gtk::Box, gtk::Label) {

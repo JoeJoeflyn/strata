@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use std::{
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -145,9 +147,37 @@ pub(crate) fn parse(
         value,
         &devices,
     );
-    command.stdout(Stdio::null()).stderr(Stdio::null());
+    command.stderr(Stdio::null());
+    if operation == ParseOperation::PreviewMedia {
+        command.stdout(Stdio::piped());
+    } else {
+        command.stdout(Stdio::null());
+    }
     let mut child = spawn_renderer(&mut command)
         .map_err(|error| format!("Unable to start the preview sandbox: {error}"))?;
+    if operation == ParseOperation::PreviewMedia {
+        let (status, data) = wait_for_renderer_output(
+            &mut child,
+            cancellation,
+            operation.wall_time_limit(),
+            MAX_OUTPUT_BYTES,
+        )?;
+        if !status.success() {
+            return Err("The sandboxed preview renderer failed".to_owned());
+        }
+        if data.is_empty() {
+            return Err("The preview renderer produced no output".to_owned());
+        }
+        if !valid_output(operation, &data) {
+            return Err("The preview renderer produced invalid media data".to_owned());
+        }
+        return Ok(ParseOutput {
+            data,
+            page: 0,
+            pages: 0,
+        });
+    }
+
     let status = wait_for_renderer(&mut child, cancellation, operation.wall_time_limit())?;
     if !status.success() {
         return Err("The sandboxed preview renderer failed".to_owned());
@@ -161,11 +191,7 @@ pub(crate) fn parse(
     }
     let data = fs::read(result_path).map_err(|error| error.to_string())?;
     if !valid_output(operation, &data) {
-        return Err(if operation == ParseOperation::PreviewMedia {
-            "The preview renderer produced invalid media data".to_owned()
-        } else {
-            "The preview renderer produced invalid image data".to_owned()
-        });
+        return Err("The preview renderer produced invalid image data".to_owned());
     }
     let (page, pages) = read_metadata(&output.path().join("result.meta"));
     Ok(ParseOutput { data, page, pages })
@@ -200,6 +226,80 @@ fn wait_for_renderer(
                 return Err(format!("Unable to monitor the preview renderer: {error}"));
             }
         }
+    }
+}
+
+fn wait_for_renderer_output(
+    child: &mut Child,
+    cancellation: &Cancellation,
+    wall_time_limit: Duration,
+    max_bytes: u64,
+) -> Result<(ExitStatus, Vec<u8>), String> {
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Unable to capture preview renderer output".to_owned())?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let reader = thread::spawn(move || {
+        let mut data = Vec::new();
+        let result = stdout
+            .take(max_bytes.saturating_add(1))
+            .read_to_end(&mut data)
+            .map(|_| data);
+        let _sent = sender.send(result);
+    });
+    let started = Instant::now();
+    let mut status = None;
+    let mut output = None;
+    loop {
+        if cancellation.is_cancelled() {
+            terminate(child);
+            let _joined = reader.join();
+            return Err("Preview cancelled".to_owned());
+        }
+        if started.elapsed() >= wall_time_limit {
+            terminate(child);
+            let _joined = reader.join();
+            return Err("The preview renderer timed out".to_owned());
+        }
+        if status.is_none() {
+            match child.try_wait() {
+                Ok(current) => status = current,
+                Err(error) => {
+                    terminate(child);
+                    let _joined = reader.join();
+                    return Err(format!("Unable to monitor the preview renderer: {error}"));
+                }
+            }
+        }
+        if output.is_none() {
+            match receiver.try_recv() {
+                Ok(Ok(data)) if data.len() as u64 > max_bytes => {
+                    terminate(child);
+                    let _joined = reader.join();
+                    return Err("Preview provider output exceeded its limit".to_owned());
+                }
+                Ok(Ok(data)) => output = Some(data),
+                Ok(Err(error)) => {
+                    terminate(child);
+                    let _joined = reader.join();
+                    return Err(format!("Unable to read preview renderer output: {error}"));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    terminate(child);
+                    let _joined = reader.join();
+                    return Err("Unable to read preview renderer output".to_owned());
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(status) = status
+            && let Some(output) = output.take()
+        {
+            let _joined = reader.join();
+            return Ok((status, output));
+        }
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -261,7 +361,9 @@ fn sandbox_command(
     ]);
     command.arg(executable).arg("/app/strata");
     command.arg("--ro-bind").arg(input).arg("/input");
-    command.arg("--bind").arg(output).arg("/output");
+    if operation != ParseOperation::PreviewMedia {
+        command.arg("--bind").arg(output).arg("/output");
+    }
     if operation == ParseOperation::PreviewMedia {
         // Hardware media drivers need selected render nodes plus read-only sysfs discovery data.
         for device in devices {
@@ -269,23 +371,26 @@ fn sandbox_command(
         }
         command.args(["--ro-bind", "/sys", "/sys"]);
     }
-    command.args([
-        "--",
-        "/usr/bin/prlimit",
-        &format!("--as={ADDRESS_SPACE_LIMIT_BYTES}"),
-    ]);
+    command.arg("--");
     if operation != ParseOperation::PreviewMedia {
-        command.arg("--cpu=10");
+        command
+            .arg("/usr/bin/prlimit")
+            .arg(format!("--as={ADDRESS_SPACE_LIMIT_BYTES}"))
+            .arg("--cpu=10")
+            .arg(format!("--fsize={FILE_SIZE_LIMIT_BYTES}"))
+            .arg("--");
     }
-    command.arg(format!("--fsize={FILE_SIZE_LIMIT_BYTES}"));
     command.args([
-        "--",
         "/app/strata",
         "--preview-helper",
         operation.argument(),
         "/input",
     ]);
-    command.arg(format!("/output/{}", operation.output_name()));
+    if operation == ParseOperation::PreviewMedia {
+        command.arg("/dev/stdout");
+    } else {
+        command.arg(format!("/output/{}", operation.output_name()));
+    }
     command.arg(value.to_string());
     command
 }

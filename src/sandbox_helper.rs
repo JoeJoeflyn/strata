@@ -18,6 +18,8 @@ use crate::sandbox::{MAX_OUTPUT_BYTES, gpu_devices, numbered_name};
 const HARDWARE_ATTEMPT_TIME_LIMIT: Duration = Duration::from_secs(8);
 const HARDWARE_TOTAL_TIME_LIMIT: Duration = Duration::from_secs(12);
 const MEDIA_TOTAL_TIME_LIMIT: Duration = Duration::from_secs(28);
+const MAX_MEDIA_ALLOCATION_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_MEDIA_DECODE_PIXELS: u64 = 50_000_000;
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -259,7 +261,11 @@ fn media_backends(devices: &[PathBuf]) -> Vec<MediaBackend> {
 
 fn media_command(backend: &MediaBackend, path: &Path) -> Command {
     let mut command = Command::new("ffmpeg");
-    command.args(["-nostdin", "-v", "error"]);
+    command
+        .args(["-nostdin", "-v", "error", "-max_alloc"])
+        .arg(MAX_MEDIA_ALLOCATION_BYTES.to_string())
+        .arg("-max_pixels")
+        .arg(MAX_MEDIA_DECODE_PIXELS.to_string());
     match backend {
         MediaBackend::VaApi(device) => {
             command

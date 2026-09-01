@@ -187,6 +187,7 @@ fn media_commands_select_the_backend_and_preserve_limits() {
     assert!(software.contains("-c:a libopus -b:a 96k -f webm"));
 
     for command in [vaapi, vulkan, software] {
+        assert!(command.contains("-max_alloc 536870912 -max_pixels 50000000"));
         assert!(command.contains("-map 0:v:0 -map 0:a:0? -sn -dn -t 30"));
         assert!(command.contains("-fpsmax 30"));
         assert!(command.contains("-b:v 2M -maxrate 3M -bufsize 4M"));

@@ -84,6 +84,7 @@ fn sandbox_exposes_only_runtime_input_and_private_output() {
     assert!(joined.contains("--as=2147483648"));
     assert!(joined.contains("--cpu=10"));
     assert!(joined.contains("--fsize=536870912"));
+    assert!(joined.contains("--size 536870912 --tmpfs /tmp"));
     // RLIMIT_NPROC counts every process owned by the host user, not just the
     // sandbox, and can prevent legitimate media decoders from starting.
     assert!(!joined.contains("--nproc"));
@@ -114,6 +115,7 @@ fn media_previews_use_bounded_streaming_instead_of_driver_wide_resource_limits()
     assert!(!joined.contains("--as="));
     assert!(!joined.contains("--cpu="));
     assert!(!joined.contains("--fsize="));
+    assert!(joined.contains("--size 536870912 --tmpfs /tmp"));
     assert!(!joined.contains("--bind /tmp/private-output /output"));
     assert!(joined.contains("preview-media /input /dev/stdout"));
 }

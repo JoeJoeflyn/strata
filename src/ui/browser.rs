@@ -1387,7 +1387,7 @@ impl ViewState {
             &window_overlay,
             blurred_root.clone(),
             Some(Rc::new(move || {
-                dirty_creating.get() || dirty_field.text().to_string() != initial_text
+                dirty_creating.get() || dirty_field.text() != initial_text
             })),
         );
         window_overlay.add_overlay(&layer);
@@ -2056,7 +2056,7 @@ impl ViewState {
             &subtitle,
             "Compress",
             Some(Rc::new(move || {
-                dirty_name.text().to_string() != compress_default_name
+                dirty_name.text() != compress_default_name
                     || !dirty_password.text().is_empty()
                     || !dirty_confirm.text().is_empty()
             })),
@@ -2212,9 +2212,7 @@ impl ViewState {
             "Extract to",
             &entry.display_name,
             "Extract here",
-            Some(Rc::new(move || {
-                dirty_field.text().to_string() != extract_initial_text
-            })),
+            Some(Rc::new(move || dirty_field.text() != extract_initial_text)),
         );
         let field_label = form_label("Destination folder");
         body.append(&field_label);

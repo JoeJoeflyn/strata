@@ -1379,11 +1379,16 @@ impl ViewState {
             );
         });
 
+        let initial_text = folder_input_path(&base);
+        let dirty_field = field.clone();
+        let dirty_creating = creating_destination.clone();
         let layer = modal_layer(
             &content,
             &window_overlay,
             blurred_root.clone(),
-            Some(creating_destination.clone()),
+            Some(Rc::new(move || {
+                dirty_creating.get() || dirty_field.text().to_string() != initial_text
+            })),
         );
         window_overlay.add_overlay(&layer);
         let cancel_layer = layer.clone();
@@ -1964,6 +1969,7 @@ impl ViewState {
         title: &str,
         subtitle: &str,
         confirm_label: &str,
+        block_dismiss: Option<Rc<dyn Fn() -> bool>>,
     ) -> (gtk::Box, gtk::Button, Rc<dyn Fn()>) {
         let Some(window_overlay) = self
             .overlay
@@ -1985,7 +1991,12 @@ impl ViewState {
             subtitle,
             confirm_label,
         );
-        let layer = modal_layer(&layout.content, &window_overlay, blurred_root.clone(), None);
+        let layer = modal_layer(
+            &layout.content,
+            &window_overlay,
+            blurred_root.clone(),
+            block_dismiss,
+        );
         window_overlay.add_overlay(&layer);
 
         let dismiss: Rc<dyn Fn()> = Rc::new({
@@ -2029,11 +2040,29 @@ impl ViewState {
 
         let title = format!("Compress {}", item_count_label(entries.len()));
         let subtitle = entry_kind_summary(&entries);
-        let (body, confirm, dismiss) = self.build_archive_modal(&title, &subtitle, "Compress");
 
-        let name_label = form_label("Archive name");
         let name_entry = form_entry();
         name_entry.set_text(&default_name);
+        let password_entry = form_password_entry();
+        password_entry.set_show_peek_icon(true);
+        let confirm_entry = form_password_entry();
+        confirm_entry.set_show_peek_icon(true);
+        let compress_default_name = default_name.clone();
+        let dirty_name = name_entry.clone();
+        let dirty_password = password_entry.clone();
+        let dirty_confirm = confirm_entry.clone();
+        let (body, confirm, dismiss) = self.build_archive_modal(
+            &title,
+            &subtitle,
+            "Compress",
+            Some(Rc::new(move || {
+                dirty_name.text().to_string() != compress_default_name
+                    || !dirty_password.text().is_empty()
+                    || !dirty_confirm.text().is_empty()
+            })),
+        );
+
+        let name_label = form_label("Archive name");
         body.append(&name_label);
         body.append(&name_entry);
 
@@ -2051,11 +2080,7 @@ impl ViewState {
         let password_protected = protection_options[1].clone();
 
         let password_label = form_label("Password");
-        let password_entry = form_password_entry();
-        password_entry.set_show_peek_icon(true);
         let confirm_label = form_label("Confirm password");
-        let confirm_entry = form_password_entry();
-        confirm_entry.set_show_peek_icon(true);
         let password_fields = gtk::Box::new(gtk::Orientation::Vertical, 6);
         password_fields.append(&password_label);
         password_fields.append(&password_entry);
@@ -2176,14 +2201,22 @@ impl ViewState {
             .parent()
             .and_then(|p| p.native_path().map(Path::to_path_buf))
             .unwrap_or_else(glib::home_dir);
-        let (body, confirm, dismiss) =
-            self.build_archive_modal("Extract to", &entry.display_name, "Extract here");
-        let field_label = form_label("Destination folder");
         let field = form_entry();
         field.set_hexpand(true);
         field.set_placeholder_text(Some("Type a folder path…"));
         field.set_text(&folder_input_path(&base));
         field.set_position(-1);
+        let extract_initial_text = folder_input_path(&base);
+        let dirty_field = field.clone();
+        let (body, confirm, dismiss) = self.build_archive_modal(
+            "Extract to",
+            &entry.display_name,
+            "Extract here",
+            Some(Rc::new(move || {
+                dirty_field.text().to_string() != extract_initial_text
+            })),
+        );
+        let field_label = form_label("Destination folder");
         body.append(&field_label);
         body.append(&field);
 
@@ -2263,12 +2296,17 @@ impl ViewState {
     }
 
     fn show_extract_password_dialog(self: &Rc<Self>, entry: FileEntry, destination: Location) {
-        let (body, confirm, dismiss) =
-            self.build_archive_modal("Extract", &entry.display_name, "Extract");
-
-        let password_label = form_label("Password");
         let password_entry = form_password_entry();
         password_entry.set_show_peek_icon(true);
+        let dirty_password = password_entry.clone();
+        let (body, confirm, dismiss) = self.build_archive_modal(
+            "Extract",
+            &entry.display_name,
+            "Extract",
+            Some(Rc::new(move || !dirty_password.text().is_empty())),
+        );
+
+        let password_label = form_label("Password");
         body.append(&password_label);
         body.append(&password_entry);
 
@@ -6201,7 +6239,7 @@ pub(super) fn modal_layer(
     content: &impl IsA<gtk::Widget>,
     overlay: &gtk::Overlay,
     root: Option<BlurBin>,
-    block_dismiss: Option<Rc<Cell<bool>>>,
+    block_dismiss: Option<Rc<dyn Fn() -> bool>>,
 ) -> gtk::Box {
     let layer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     layer.add_css_class("app-modal-layer");
@@ -6235,7 +6273,7 @@ pub(super) fn modal_layer(
     let block = block_dismiss.clone();
     click.connect_pressed(move |_, _, x, y| {
         if let Some(block) = block.as_ref()
-            && block.get()
+            && block()
         {
             return;
         }
@@ -6428,7 +6466,19 @@ fn show_authentication_dialog(
         }
     });
 
-    let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
+    let auth_user = username.clone();
+    let auth_domain = domain.clone();
+    let auth_password = password.clone();
+    let layer = modal_layer(
+        &content,
+        &window_overlay,
+        blurred_root.clone(),
+        Some(Rc::new(move || {
+            !auth_user.text().is_empty()
+                || !auth_domain.text().is_empty()
+                || !auth_password.text().is_empty()
+        })),
+    );
     window_overlay.add_overlay(&layer);
 
     let cancel_operation = operation.cloned();

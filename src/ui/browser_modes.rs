@@ -1445,10 +1445,28 @@ fn column_resize_handle(
     resize.set_button(1);
     let starting_width = Rc::new(Cell::new(initial_width));
     let pointer_start = Rc::new(Cell::new(None::<f64>));
+    let last_press = Rc::new(Cell::new(0u64));
     let starting_for_begin = starting_width.clone();
     let pointer_for_begin = pointer_start.clone();
+    let last_press_for_begin = last_press.clone();
     let columns_for_begin = columns.clone();
+    let columns_for_autofit = columns.clone();
     resize.connect_drag_begin(move |gesture, _, _| {
+        let now = glib::monotonic_time() as u64;
+        let prev = last_press_for_begin.get();
+        last_press_for_begin.set(now);
+        if now.wrapping_sub(prev) <= 400_000 {
+            let natural = columns_for_autofit.cells[index]
+                .borrow()
+                .iter()
+                .filter_map(glib::WeakRef::upgrade)
+                .map(|widget| super::browser::max_child_natural_width(&widget))
+                .max()
+                .unwrap_or(initial_width);
+            set_explorer_column_width(&columns_for_autofit, index, natural.max(64));
+            gesture.set_state(gtk::EventSequenceState::Denied);
+            return;
+        }
         let width = columns_for_begin.cells[index]
             .borrow()
             .iter()
@@ -1463,6 +1481,7 @@ fn column_resize_handle(
         );
         gesture.set_state(gtk::EventSequenceState::Claimed);
     });
+    let columns_for_update = columns.clone();
     resize.connect_drag_update(move |gesture, fallback_offset_x, _| {
         let pointer_x = gesture
             .current_event()
@@ -1473,7 +1492,7 @@ fn column_resize_handle(
             .zip(pointer_x)
             .map_or(fallback_offset_x, |(start, current)| current - start);
         let width = (f64::from(starting_width.get()) + offset_x).round() as i32;
-        set_explorer_column_width(&columns, index, width.max(64));
+        set_explorer_column_width(&columns_for_update, index, width.max(64));
     });
     handle.add_controller(resize);
     handle

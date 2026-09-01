@@ -4168,10 +4168,24 @@ impl ViewState {
         resize.set_button(1);
         let resize_start = Rc::new(Cell::new(COLUMN_WIDTH));
         let pointer_start = Rc::new(Cell::new(None));
+        let last_press = Rc::new(Cell::new(0u64));
         let shell_for_resize_start = shell.clone();
+        let shell_for_autofit = shell.clone();
+        let column_for_autofit = column.clone();
         let resize_start_for_begin = resize_start.clone();
         let pointer_start_for_begin = pointer_start.clone();
+        let last_press_for_begin = last_press.clone();
         resize.connect_drag_begin(move |gesture, _, _| {
+            let now = glib::monotonic_time() as u64;
+            let prev = last_press_for_begin.get();
+            last_press_for_begin.set(now);
+            if now.wrapping_sub(prev) <= 400_000 {
+                let max_natural =
+                    max_child_natural_width(column_for_autofit.upcast_ref::<gtk::Widget>());
+                shell_for_autofit.set_size_request(max_natural.max(COLUMN_WIDTH), -1);
+                gesture.set_state(gtk::EventSequenceState::Denied);
+                return;
+            }
             resize_start_for_begin.set(shell_for_resize_start.width().max(COLUMN_WIDTH));
             if let Some((pointer_x, _)) = gesture.current_event().and_then(|event| event.position())
             {
@@ -6090,6 +6104,20 @@ fn resized_column_width(initial_width: i32, horizontal_offset: f64) -> i32 {
     (f64::from(initial_width) + horizontal_offset)
         .round()
         .max(f64::from(COLUMN_WIDTH)) as i32
+}
+
+pub(super) fn max_child_natural_width(widget: &gtk::Widget) -> i32 {
+    let (_, natural, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
+    let mut max_natural = natural;
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        let child_max = max_child_natural_width(&c);
+        if child_max > max_natural {
+            max_natural = child_max;
+        }
+        child = c.next_sibling();
+    }
+    max_natural
 }
 
 fn horizontal_reveal_target(

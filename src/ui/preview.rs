@@ -26,6 +26,7 @@ const TRANSITION: Duration = Duration::from_millis(260);
 const PDF_PAGE_GAP: i32 = 6;
 const PDF_MIN_ZOOM: f64 = 1.0;
 const PDF_MAX_ZOOM: f64 = 4.0;
+const MEDIA_PLUGIN_INSTALL_COMMAND: &str = "sudo pacman -S --needed gst-plugins-good gst-libav";
 
 struct PreviewState {
     provider: Rc<dyn PreviewProvider>,
@@ -775,15 +776,26 @@ impl PreviewState {
 
     fn show_media_error(&self, error: &glib::Error) {
         let message = error.message();
-        let (title, detail) = media_error_feedback(message);
-        self.show_message_with_icon(title, &detail, Some(crate::assets::icons::TRIANGLE_ALERT));
+        let (title, detail, command) = media_error_feedback(message);
+        self.show_message_with_icon(
+            title,
+            &detail,
+            Some(crate::assets::icons::TRIANGLE_ALERT),
+            command,
+        );
     }
 
     fn show_message(&self, title: &str, detail: &str) {
-        self.show_message_with_icon(title, detail, None);
+        self.show_message_with_icon(title, detail, None, None);
     }
 
-    fn show_message_with_icon(&self, title: &str, detail: &str, icon: Option<&str>) {
+    fn show_message_with_icon(
+        &self,
+        title: &str,
+        detail: &str,
+        icon: Option<&str>,
+        command: Option<&str>,
+    ) {
         self.clear_content();
         let box_ = gtk::Box::new(gtk::Orientation::Vertical, 7);
         box_.add_css_class("preview-feedback");
@@ -804,11 +816,61 @@ impl PreviewState {
         detail.set_wrap(true);
         box_.append(&heading);
         box_.append(&detail);
+        if let Some(command) = command {
+            box_.append(&copyable_command(command));
+        }
         self.content.append(&box_);
     }
 }
 
-fn media_error_feedback(message: &str) -> (&'static str, String) {
+fn copyable_command(command: &str) -> gtk::Overlay {
+    let overlay = gtk::Overlay::new();
+    overlay.add_css_class("preview-command");
+    overlay.set_hexpand(true);
+
+    let field = gtk::Entry::new();
+    field.add_css_class("form-control");
+    field.add_css_class("preview-command-entry");
+    field.set_text(command);
+    field.set_editable(false);
+    field.set_hexpand(true);
+    overlay.set_child(Some(&field));
+
+    let copy = gtk::Button::builder()
+        .tooltip_text("Copy install command")
+        .halign(gtk::Align::End)
+        .valign(gtk::Align::Center)
+        .build();
+    copy.add_css_class("preview-command-copy");
+    copy.set_has_frame(false);
+    copy.set_cursor_from_name(Some("pointer"));
+    let copy_icon = crate::assets::primary_icon(crate::assets::icons::COPY, 16);
+    copy.set_child(Some(&copy_icon));
+    let copied_command = command.to_owned();
+    let feedback_generation = Rc::new(Cell::new(0_u64));
+    copy.connect_clicked(move |button| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&copied_command);
+        }
+        let generation = feedback_generation.get().saturating_add(1);
+        feedback_generation.set(generation);
+        crate::assets::set_primary_icon(&copy_icon, crate::assets::icons::CHECK);
+        button.set_tooltip_text(Some("Install command copied"));
+        let button = button.clone();
+        let copy_icon = copy_icon.clone();
+        let feedback_generation = feedback_generation.clone();
+        glib::timeout_add_local_once(Duration::from_secs(2), move || {
+            if feedback_generation.get() == generation {
+                crate::assets::set_primary_icon(&copy_icon, crate::assets::icons::COPY);
+                button.set_tooltip_text(Some("Copy install command"));
+            }
+        });
+    });
+    overlay.add_overlay(&copy);
+    overlay
+}
+
+fn media_error_feedback(message: &str) -> (&'static str, String, Option<&'static str>) {
     let normalized = message.to_ascii_lowercase();
     if [
         "gstreamer",
@@ -822,13 +884,15 @@ fn media_error_feedback(message: &str) -> (&'static str, String) {
     {
         return (
             "Additional media support required",
-            "On Arch or Omarchy, install gst-plugins-good and gst-libav, then restart Strata."
+            "On Arch or Omarchy, install the required GStreamer plugins, then restart Strata."
                 .to_owned(),
+            Some(MEDIA_PLUGIN_INSTALL_COMMAND),
         );
     }
     (
         "Preview unavailable",
         format!("Unable to play this media preview: {message}"),
+        None,
     )
 }
 

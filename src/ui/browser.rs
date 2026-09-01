@@ -2270,66 +2270,17 @@ impl ViewState {
     }
 
     fn show_extract_to_dialog(self: &Rc<Self>, entry: FileEntry) {
-        let Some(window_overlay) = self
-            .overlay
-            .root()
-            .and_downcast::<gtk::Window>()
-            .and_then(|window| window.child())
-            .and_downcast::<gtk::Overlay>()
-        else {
-            return;
-        };
-        let blurred_root = window_overlay.child().and_downcast::<BlurBin>();
-        if let Some(root) = blurred_root.as_ref() {
-            root.set_blurred(true);
-        }
         let base = entry
             .location
             .parent()
             .and_then(|p| p.native_path().map(Path::to_path_buf))
             .unwrap_or_else(glib::home_dir);
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        content.add_css_class("transfer-dialog");
-        content.set_halign(gtk::Align::Center);
-        content.set_valign(gtk::Align::Center);
-
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        header.add_css_class("transfer-header");
-        let symbol = gtk::CenterBox::new();
-        symbol.add_css_class("transfer-symbol");
-        symbol.set_center_widget(Some(&crate::assets::primary_icon(
-            crate::assets::icons::FILE_ARCHIVE,
-            20,
-        )));
-        let heading = gtk::Box::new(gtk::Orientation::Vertical, 1);
-        heading.set_hexpand(true);
-        let title = gtk::Label::new(Some("Extract to"));
-        title.add_css_class("transfer-title");
-        title.set_xalign(0.0);
-        let subtitle = gtk::Label::new(Some(&entry.display_name));
-        subtitle.add_css_class("transfer-subtitle");
-        subtitle.set_xalign(0.0);
-        heading.append(&title);
-        heading.append(&subtitle);
-        let close = gtk::Button::new();
-        close.add_css_class("transfer-close");
-        close.set_tooltip_text(Some("Cancel"));
-        close.set_child(Some(&crate::assets::primary_icon(
-            crate::assets::icons::X,
-            16,
-        )));
-        header.append(&symbol);
-        header.append(&heading);
-        header.append(&close);
-        content.append(&header);
-
-        let body = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        body.add_css_class("transfer-body");
-        let field_label = gtk::Label::new(Some("DESTINATION FOLDER"));
-        field_label.add_css_class("transfer-field-label");
+        let (body, confirm, dismiss) =
+            self.build_archive_modal("Extract to", &entry.display_name, "Extract here");
+        let field_label = gtk::Label::new(Some("Destination folder"));
+        field_label.add_css_class("action-dialog-field-label");
         field_label.set_xalign(0.0);
-        let field = gtk::Entry::new();
-        field.add_css_class("transfer-field");
+        let field = form_entry();
         field.set_hexpand(true);
         field.set_placeholder_text(Some("Type a folder path…"));
         field.set_text(&folder_input_path(&base));
@@ -2355,20 +2306,6 @@ impl ViewState {
         error.set_xalign(0.0);
         error.set_visible(false);
         body.append(&error);
-        content.append(&body);
-
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        actions.add_css_class("transfer-actions");
-        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        spacer.set_hexpand(true);
-        let cancel = gtk::Button::with_label("Cancel");
-        cancel.add_css_class("transfer-cancel");
-        let confirm = gtk::Button::with_label("Extract here");
-        confirm.add_css_class("transfer-confirm");
-        actions.append(&spacer);
-        actions.append(&cancel);
-        actions.append(&confirm);
-        content.append(&actions);
 
         let generation = Rc::new(Cell::new(0_u64));
         let suggestions_box = suggestions.clone();
@@ -2384,29 +2321,12 @@ impl ViewState {
             );
         });
 
-        let layer = modal_layer(&content);
-        window_overlay.add_overlay(&layer);
-        let cancel_layer = layer.clone();
-        let cancel_overlay = window_overlay.clone();
-        let cancel_root = blurred_root.clone();
-        cancel.connect_clicked(move |_| {
-            dismiss_modal_layer(&cancel_layer, &cancel_overlay, cancel_root.as_ref());
-        });
-        let close_layer = layer.clone();
-        let close_overlay = window_overlay.clone();
-        let close_root = blurred_root.clone();
-        close.connect_clicked(move |_| {
-            dismiss_modal_layer(&close_layer, &close_overlay, close_root.as_ref());
-        });
-
-        let confirm_layer = layer.clone();
-        let confirm_overlay = window_overlay.clone();
-        let confirm_root = blurred_root.clone();
         let extract_state = self.clone();
         let confirm_field = field.clone();
         let confirm_error = error.clone();
         let confirm_base = base.clone();
         let extract_entry = entry.clone();
+        let dismiss_for_confirm = dismiss.clone();
         confirm.connect_clicked(move |_| {
             let path =
                 resolve_destination_path(&confirm_field.text(), &confirm_base, &glib::home_dir());
@@ -2436,7 +2356,7 @@ impl ViewState {
             extract_state
                 .browser
                 .extract(extract_entry.clone(), dest, None);
-            dismiss_modal_layer(&confirm_layer, &confirm_overlay, confirm_root.as_ref());
+            dismiss_for_confirm();
         });
 
         field.grab_focus();

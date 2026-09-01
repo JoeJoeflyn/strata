@@ -701,6 +701,15 @@ entry.form-control selection {
   color: @theme_bg;
 }
 
+entry.form-control.error,
+entry.form-control.error:focus,
+entry.form-control.error:focus-visible,
+entry.form-control.error:focus-within {
+  border-color: @theme_danger;
+  box-shadow: 0 0 0 1px alpha(@theme_danger, 0.4);
+  outline-color: @theme_danger;
+}
+
 entry.form-control:disabled {
   background: alpha(@theme_muted, 0.3);
   border-color: alpha(@theme_border, 0.38);

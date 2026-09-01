@@ -283,7 +283,8 @@ impl ModeViews {
             return false;
         };
         rename.label.set_visible(true);
-        rename.field.unparent();
+        rename.field.set_visible(false);
+        rename.field.set_sensitive(true);
         true
     }
 
@@ -317,18 +318,14 @@ impl ModeViews {
         else {
             return false;
         };
-        let Some(parent) = label.parent().and_downcast::<gtk::Box>() else {
+        let Some(field) =
+            descendant_with_class(&widget, "inline-rename").and_downcast::<gtk::Entry>()
+        else {
             return false;
         };
-        let field = gtk::Entry::new();
-        field.add_css_class("inline-rename");
-        field.set_width_chars(12);
         field.set_text(&entry.display_name);
-        field.connect_changed(|field| {
-            super::browser::update_basename_validation(field);
-        });
+        field.set_visible(true);
         label.set_visible(false);
-        parent.append(&field);
         let browser = Rc::downgrade(&self.browser);
         let renamed_entry = entry.clone();
         let active = self.active_rename.clone();
@@ -337,7 +334,7 @@ impl ModeViews {
             if name == renamed_entry.display_name {
                 if let Some(rename) = active.take() {
                     rename.label.set_visible(true);
-                    rename.field.unparent();
+                    rename.field.set_visible(false);
                 }
             } else if let Some(browser) = browser.upgrade() {
                 field.set_sensitive(false);

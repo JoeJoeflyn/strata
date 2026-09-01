@@ -71,6 +71,9 @@ pub fn present_location(application: &gtk::Application, location: Option<PathBuf
                 }
             }
         }
+        BrowserEvent::FocusChanged { position: None, .. } if preview_for_selection.is_open() => {
+            preview_for_selection.close();
+        }
         _ => {}
     });
 

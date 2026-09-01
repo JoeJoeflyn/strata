@@ -169,10 +169,9 @@ fn media_commands_select_the_backend_and_preserve_limits() {
     assert!(vulkan.contains("-c:a aac -b:a 96k -f mp4"));
 
     let software = arguments(&MediaBackend::Software);
-    assert!(
-        software
-            .contains("-vf scale=w=1280:h=1280:force_original_aspect_ratio=decrease -c:v libvpx")
-    );
+    assert!(software.contains(
+        "-vf scale=w=1280:h=1280:force_original_aspect_ratio=decrease,format=yuv420p -c:v libvpx -auto-alt-ref 0"
+    ));
     assert!(software.contains("-threads 2 -deadline realtime -cpu-used 8"));
     assert!(software.contains("-c:a libopus -b:a 96k -f webm"));
 

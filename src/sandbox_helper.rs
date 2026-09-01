@@ -314,9 +314,11 @@ fn media_command(backend: &MediaBackend, path: &Path, output: &Path) -> Command 
         MediaBackend::Software => {
             command.args([
                 "-vf",
-                "scale=w=1280:h=1280:force_original_aspect_ratio=decrease",
+                "scale=w=1280:h=1280:force_original_aspect_ratio=decrease,format=yuv420p",
                 "-c:v",
                 "libvpx",
+                "-auto-alt-ref",
+                "0",
                 "-threads",
                 "2",
                 "-deadline",

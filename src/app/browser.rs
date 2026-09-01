@@ -1415,6 +1415,7 @@ impl Browser {
                 depth,
                 positions: vec![position],
                 focused: position,
+                take_focus: true,
             });
         }
     }

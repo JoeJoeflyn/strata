@@ -17,8 +17,8 @@ use crate::{
     model::{EntryKind, FileEntry, Location, SortDirection, SortKey},
     services::{
         ArchiveFormat, FileSource, LocationValidationError, OperationProvider, PasteItem,
-        PreviewContent, TransferConflict, backend_unavailable_message, content_family,
-        has_plain_text_extension, validate_basename,
+        PreviewContent, SearchEvent, TransferConflict, backend_unavailable_message, content_family,
+        has_plain_text_extension, index_tree, validate_basename,
     },
 };
 
@@ -274,7 +274,7 @@ pub(super) struct ViewState {
     delete_progress: RefCell<Option<DeleteProgressView>>,
     pin_handler: RefCell<Option<PinHandler>>,
     pin_status_handler: RefCell<Option<PinStatusHandler>>,
-    pending_select: RefCell<Option<String>>,
+    pending_select: RefCell<Vec<String>>,
     pending_extract_retry: RefCell<Option<(FileEntry, Location)>>,
     pending_navigate: RefCell<Option<Location>>,
     browser: Rc<Browser>,
@@ -416,7 +416,7 @@ impl BrowserView {
             delete_progress: RefCell::new(None),
             pin_handler: RefCell::new(None),
             pin_status_handler: RefCell::new(None),
-            pending_select: RefCell::new(None),
+            pending_select: RefCell::new(Vec::new()),
             pending_extract_retry: RefCell::new(None),
             pending_navigate: RefCell::new(None),
             browser,
@@ -1321,7 +1321,7 @@ impl ViewState {
         let field_label = form_label("Destination folder");
         let field = form_entry();
         field.set_hexpand(true);
-        field.set_placeholder_text(Some("Type a folder path…"));
+        field.set_placeholder_text(Some("Search for a folder…"));
         field.set_text(&folder_input_path(&base));
         field.set_position(-1);
         layout.body.append(&field_label);
@@ -1355,29 +1355,22 @@ impl ViewState {
         let pending_creation = Rc::new(RefCell::new(None::<std::path::PathBuf>));
         let creating_destination = Rc::new(Cell::new(false));
         let suggestions_box = suggestions.clone();
-        let suggestions_generation = generation.clone();
-        let suggestions_base = base.clone();
         let suggestions_error = error.clone();
         let changed_confirm = confirm.clone();
         let changed_creation = pending_creation.clone();
-        field.connect_changed(move |field| {
-            field.remove_css_class("error");
-            suggestions_error.set_visible(false);
-            suggestions_error.remove_css_class("warning");
-            suggestions_error.add_css_class("error");
-            changed_creation.borrow_mut().take();
-            changed_confirm.set_label(if move_sources {
-                "Move here"
-            } else {
-                "Copy here"
+        let search_closed =
+            setup_transfer_search(&field, &suggestions_box, &generation, move |field| {
+                field.remove_css_class("error");
+                suggestions_error.set_visible(false);
+                suggestions_error.remove_css_class("warning");
+                suggestions_error.add_css_class("error");
+                changed_creation.borrow_mut().take();
+                changed_confirm.set_label(if move_sources {
+                    "Move here"
+                } else {
+                    "Copy here"
+                });
             });
-            refresh_transfer_suggestions(
-                field,
-                &suggestions_box,
-                &suggestions_generation,
-                suggestions_base.clone(),
-            );
-        });
 
         let layer = modal_layer(&content);
         window_overlay.add_overlay(&layer);
@@ -1385,8 +1378,10 @@ impl ViewState {
         let cancel_overlay = window_overlay.clone();
         let cancel_root = blurred_root.clone();
         let cancel_creating = creating_destination.clone();
+        let cancel_closed = search_closed.clone();
         cancel.connect_clicked(move |_| {
             if !cancel_creating.get() {
+                cancel_closed.set(true);
                 dismiss_modal_layer(&cancel_layer, &cancel_overlay, cancel_root.as_ref());
             }
         });
@@ -1394,8 +1389,10 @@ impl ViewState {
         let close_overlay = window_overlay.clone();
         let close_root = blurred_root.clone();
         let close_creating = creating_destination.clone();
+        let close_closed = search_closed.clone();
         close.connect_clicked(move |_| {
             if !close_creating.get() {
+                close_closed.set(true);
                 dismiss_modal_layer(&close_layer, &close_overlay, close_root.as_ref());
             }
         });
@@ -1447,6 +1444,11 @@ impl ViewState {
                 transfer_state
                     .pending_navigate
                     .replace(Some(Location::local(path.clone())));
+                let names: Vec<String> = sources
+                    .iter()
+                    .filter_map(|s| s.native_path()?.file_name()?.to_str().map(String::from))
+                    .collect();
+                transfer_state.pending_select.borrow_mut().extend(names);
                 transfer_state.start_transfer(Location::local(path), sources.clone(), move_sources);
                 dismiss_modal_layer(&confirm_layer, &confirm_overlay, confirm_root.as_ref());
                 return;
@@ -1478,6 +1480,13 @@ impl ViewState {
                         created_state
                             .pending_navigate
                             .replace(Some(Location::local(path.clone())));
+                        let names: Vec<String> = created_sources
+                            .iter()
+                            .filter_map(|s| {
+                                s.native_path()?.file_name()?.to_str().map(String::from)
+                            })
+                            .collect();
+                        created_state.pending_select.borrow_mut().extend(names);
                         created_state.start_transfer(
                             Location::local(path),
                             created_sources,
@@ -1548,7 +1557,7 @@ impl ViewState {
         });
         layer.add_controller(escape);
 
-        refresh_transfer_suggestions(&field, &suggestions, &generation, base);
+        field.emit_by_name::<()>("changed", &[]);
         field.grab_focus();
     }
 
@@ -2176,7 +2185,7 @@ impl ViewState {
         let field_label = form_label("Destination folder");
         let field = form_entry();
         field.set_hexpand(true);
-        field.set_placeholder_text(Some("Type a folder path…"));
+        field.set_placeholder_text(Some("Search for a folder…"));
         field.set_text(&folder_input_path(&base));
         field.set_position(-1);
         body.append(&field_label);
@@ -2204,17 +2213,12 @@ impl ViewState {
 
         let generation = Rc::new(Cell::new(0_u64));
         let suggestions_box = suggestions.clone();
-        let suggestions_generation = generation.clone();
-        let suggestions_base = base.clone();
-        field.connect_changed(move |field| {
-            field.remove_css_class("error");
-            refresh_transfer_suggestions(
-                field,
-                &suggestions_box,
-                &suggestions_generation,
-                suggestions_base.clone(),
-            );
-        });
+        let extract_error = error.clone();
+        let search_closed =
+            setup_transfer_search(&field, &suggestions_box, &generation, move |field| {
+                field.remove_css_class("error");
+                extract_error.set_visible(false);
+            });
 
         let extract_state = self.clone();
         let confirm_field = field.clone();
@@ -2222,6 +2226,7 @@ impl ViewState {
         let confirm_base = base.clone();
         let extract_entry = entry.clone();
         let dismiss_for_confirm = dismiss.clone();
+        let confirm_closed = search_closed.clone();
         confirm.connect_clicked(move |_| {
             let path =
                 resolve_destination_path(&confirm_field.text(), &confirm_base, &glib::home_dir());
@@ -2251,6 +2256,7 @@ impl ViewState {
             extract_state
                 .browser
                 .extract(extract_entry.clone(), dest, None);
+            confirm_closed.set(true);
             dismiss_for_confirm();
         });
 
@@ -3167,16 +3173,18 @@ impl ViewState {
                         column.presentation.show_content();
                     }
                 }
-                if self.browser.active_depth() == Some(depth)
-                    && let Some(name) = self.pending_select.take()
-                {
-                    let weak = Rc::downgrade(self);
-                    let name = name.clone();
-                    glib::idle_add_local_once(move || {
-                        if let Some(state) = weak.upgrade() {
-                            state.browser.select_entry_by_name(&name);
-                        }
-                    });
+                if self.browser.active_depth() == Some(depth) {
+                    let names = self.pending_select.take();
+                    if !names.is_empty() {
+                        let weak = Rc::downgrade(self);
+                        glib::idle_add_local_once(move || {
+                            if let Some(state) = weak.upgrade() {
+                                for name in &names {
+                                    state.browser.select_entry_by_name(name);
+                                }
+                            }
+                        });
+                    }
                 }
             }
             BrowserEvent::LoadFailed { depth, message } => {
@@ -3354,7 +3362,7 @@ impl ViewState {
                 self.dismiss_delete_progress();
                 self.pending_extract_retry.replace(None);
                 if !select_name.is_empty() {
-                    self.pending_select.replace(Some(select_name));
+                    self.pending_select.borrow_mut().push(select_name);
                 }
                 if let Some(dest) = self.pending_navigate.take() {
                     self.browser.navigate(dest);
@@ -5334,62 +5342,144 @@ fn connect_context_extract(
     });
 }
 
-fn refresh_transfer_suggestions(
+fn render_transfer_suggestions(
+    suggestions: &gtk::Box,
+    items: Vec<crate::services::SearchItem>,
+    field: &gtk::Entry,
+) {
+    while let Some(child) = suggestions.first_child() {
+        suggestions.remove(&child);
+    }
+    let mut dirs: Vec<_> = items.into_iter().filter(|item| item.is_directory).collect();
+    dirs.sort_by_key(|item| item.path.ancestors().count());
+    dirs.truncate(8);
+    if dirs.is_empty() {
+        let empty = gtk::Label::new(Some("No matching folders"));
+        empty.add_css_class("transfer-suggestions-empty");
+        empty.set_xalign(0.0);
+        suggestions.append(&empty);
+        return;
+    }
+    for item in dirs {
+        append_suggestion(suggestions, &item.path, field);
+    }
+}
+
+fn append_suggestion(suggestions: &gtk::Box, path: &Path, field: &gtk::Entry) {
+    let option = gtk::Button::new();
+    option.add_css_class("transfer-suggestion");
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
+    row.append(&crate::assets::primary_icon(
+        crate::assets::icons::FOLDER,
+        16,
+    ));
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned());
+    let label = gtk::Label::new(Some(&name));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    row.append(&label);
+    if let Some(parent) = path.parent().map(compact_native_path) {
+        let parent_label = gtk::Label::new(Some(&parent));
+        parent_label.add_css_class("transfer-suggestion-parent");
+        parent_label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+        parent_label.set_xalign(1.0);
+        row.append(&parent_label);
+    }
+    option.set_child(Some(&row));
+    option.set_tooltip_text(Some(&path.to_string_lossy()));
+    let selected_field = field.clone();
+    let path = path.to_path_buf();
+    option.connect_clicked(move |_| {
+        selected_field.remove_css_class("error");
+        selected_field.set_text(&folder_input_path(&path));
+        selected_field.set_position(-1);
+        selected_field.grab_focus();
+    });
+    suggestions.append(&option);
+}
+
+fn setup_transfer_search(
     field: &gtk::Entry,
     suggestions: &gtk::Box,
     generation: &Rc<Cell<u64>>,
-    base: std::path::PathBuf,
-) {
-    let request = generation.get().saturating_add(1);
-    generation.set(request);
-    let input = field.text().to_string();
-    let home = glib::home_dir();
-    let field = field.clone();
-    let suggestions = suggestions.clone();
-    let generation = generation.clone();
-    glib::MainContext::default().spawn_local(async move {
-        let matches =
-            gio::spawn_blocking(move || directory_suggestions(&input, &base, &home)).await;
-        if generation.get() != request {
-            return;
+    on_changed: impl Fn(&gtk::Entry) + 'static,
+) -> Rc<Cell<bool>> {
+    let (search_handle, search_receiver) = index_tree(glib::home_dir());
+    let search_handle = Rc::new(search_handle);
+    let search_closed = Rc::new(Cell::new(false));
+    let search_mode = Rc::new(Cell::new(false));
+    let poll_suggestions = suggestions.clone();
+    let poll_field = field.clone();
+    let poll_closed = search_closed.clone();
+    let poll_mode = search_mode.clone();
+    let _poll = glib::timeout_add_local(Duration::from_millis(16), move || {
+        if poll_closed.get() {
+            return glib::ControlFlow::Break;
         }
-        while let Some(child) = suggestions.first_child() {
-            suggestions.remove(&child);
+        if !poll_mode.get() {
+            return glib::ControlFlow::Continue;
         }
-        let Ok(matches) = matches else {
-            return;
-        };
-        if matches.is_empty() {
-            let empty = gtk::Label::new(Some("No matching folders"));
-            empty.add_css_class("transfer-suggestions-empty");
-            empty.set_xalign(0.0);
-            suggestions.append(&empty);
+        let mut latest = None;
+        for _ in 0..8 {
+            match search_receiver.try_recv() {
+                Ok(event) => latest = Some(event),
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    return glib::ControlFlow::Break;
+                }
+            }
         }
-        for path in matches {
-            let option = gtk::Button::new();
-            option.add_css_class("transfer-suggestion");
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 9);
-            row.append(&crate::assets::primary_icon(
-                crate::assets::icons::FOLDER,
-                16,
-            ));
-            let label = gtk::Label::new(Some(&compact_native_path(&path)));
-            label.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
-            label.set_xalign(0.0);
-            label.set_hexpand(true);
-            row.append(&label);
-            option.set_child(Some(&row));
-            option.set_tooltip_text(Some(&path.to_string_lossy()));
-            let selected_field = field.clone();
-            option.connect_clicked(move |_| {
-                selected_field.remove_css_class("error");
-                selected_field.set_text(&folder_input_path(&path));
-                selected_field.set_position(-1);
-                selected_field.grab_focus();
+        if let Some(SearchEvent::Results { query, items, .. }) = latest
+            && query == poll_field.text().trim()
+        {
+            render_transfer_suggestions(&poll_suggestions, items, &poll_field);
+        }
+        glib::ControlFlow::Continue
+    });
+    let suggestions_clone = suggestions.clone();
+    let generation_clone = generation.clone();
+    field.connect_changed(move |field| {
+        on_changed(field);
+        let input = field.text().to_string();
+        let looks_like_path = input.trim().contains(std::path::MAIN_SEPARATOR)
+            || input.trim().starts_with('~')
+            || input.trim().is_empty();
+        if looks_like_path {
+            search_mode.set(false);
+            let request = generation_clone.get().saturating_add(1);
+            generation_clone.set(request);
+            let gen_check = generation_clone.clone();
+            let home = glib::home_dir();
+            let field_clone = field.clone();
+            let suggestions_clone = suggestions_clone.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let matches = gio::spawn_blocking(move || path_suggestions(&input, &home)).await;
+                if gen_check.get() != request {
+                    return;
+                }
+                while let Some(child) = suggestions_clone.first_child() {
+                    suggestions_clone.remove(&child);
+                }
+                let Ok(paths) = matches else { return };
+                if paths.is_empty() {
+                    let empty = gtk::Label::new(Some("No matching folders"));
+                    empty.add_css_class("transfer-suggestions-empty");
+                    empty.set_xalign(0.0);
+                    suggestions_clone.append(&empty);
+                }
+                for path in paths {
+                    append_suggestion(&suggestions_clone, &path, &field_clone);
+                }
             });
-            suggestions.append(&option);
+        } else {
+            search_mode.set(true);
+            search_handle.query(&input);
         }
     });
+    search_closed
 }
 
 fn folder_input_path(path: &Path) -> String {
@@ -5417,14 +5507,14 @@ fn resolve_destination_path(input: &str, base: &Path, home: &Path) -> std::path:
     }
 }
 
-fn directory_suggestions(input: &str, base: &Path, home: &Path) -> Vec<std::path::PathBuf> {
-    let resolved = resolve_destination_path(input, base, home);
+fn path_suggestions(input: &str, home: &Path) -> Vec<std::path::PathBuf> {
+    let resolved = resolve_destination_path(input, home, home);
     let trailing_separator = input.trim_end().ends_with(std::path::MAIN_SEPARATOR);
     let (directory, prefix) = if trailing_separator {
         (resolved, String::new())
     } else {
         (
-            resolved.parent().unwrap_or(base).to_path_buf(),
+            resolved.parent().unwrap_or(home).to_path_buf(),
             resolved
                 .file_name()
                 .map(|name| name.to_string_lossy().to_lowercase())

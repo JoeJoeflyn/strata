@@ -348,15 +348,14 @@ fn destination_paths_expand_home_and_relative_input() {
 }
 
 #[test]
-fn directory_autocomplete_suggests_only_matching_folders() -> Result<(), Box<dyn std::error::Error>>
-{
+fn path_suggestions_list_only_matching_folders() -> Result<(), Box<dyn std::error::Error>> {
     let root = std::env::temp_dir().join(format!("strata-path-suggestions-{}", std::process::id()));
     let _ignored = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("Documents"))?;
     std::fs::create_dir_all(root.join("Downloads"))?;
     std::fs::write(root.join("Document.txt"), b"not a folder")?;
 
-    let suggestions = directory_suggestions(&format!("{}/Doc", root.display()), &root, &root);
+    let suggestions = path_suggestions(&format!("{}/Doc", root.display()), &root);
 
     assert_eq!(suggestions, vec![root.join("Documents")]);
     std::fs::remove_dir_all(root)?;

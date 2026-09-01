@@ -1635,6 +1635,11 @@ menubutton.column-header-action > button:focus-visible image {
   color: @theme_accent;
 }
 
+.transfer-suggestion-parent {
+  color: @theme_dim_text;
+  font-size: 0.85em;
+}
+
 .properties-content {
   min-width: 382px;
 }

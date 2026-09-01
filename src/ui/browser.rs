@@ -16,8 +16,8 @@ use crate::{
     app::{Browser, BrowserEvent},
     model::{EntryKind, FileEntry, Location, SortDirection, SortKey},
     services::{
-        ArchiveFormat, FileSource, LocationValidationError, OperationProvider, PasteItem,
-        PreviewContent, TransferConflict, backend_unavailable_message, content_family,
+        ArchiveFormat, FileSource, LoadHandle, LocationValidationError, OperationProvider,
+        PasteItem, PreviewContent, TransferConflict, backend_unavailable_message, content_family,
         has_plain_text_extension, validate_basename,
     },
 };
@@ -94,6 +94,12 @@ struct DeleteProgressView {
     blurred_root: Option<BlurBin>,
     progress: gtk::ProgressBar,
     status: gtk::Label,
+}
+
+struct TrashLoadingView {
+    layer: gtk::Box,
+    overlay: gtk::Overlay,
+    blurred_root: Option<BlurBin>,
 }
 
 struct PeekView {
@@ -278,6 +284,9 @@ pub(super) struct ViewState {
     pending_select: RefCell<Option<String>>,
     pending_extract_retry: RefCell<Option<(FileEntry, Location)>>,
     pending_navigate: RefCell<Option<Location>>,
+    pending_trash_summary: RefCell<Option<LoadHandle>>,
+    pending_empty_trash: RefCell<Option<LoadHandle>>,
+    trash_loading: RefCell<Option<TrashLoadingView>>,
     browser: Rc<Browser>,
 }
 
@@ -420,6 +429,9 @@ impl BrowserView {
             pending_select: RefCell::new(None),
             pending_extract_retry: RefCell::new(None),
             pending_navigate: RefCell::new(None),
+            pending_trash_summary: RefCell::new(None),
+            pending_empty_trash: RefCell::new(None),
+            trash_loading: RefCell::new(None),
             browser,
         });
 
@@ -1574,6 +1586,7 @@ impl ViewState {
         icon: &str,
         title_text: &str,
         subtitle_text: &str,
+        on_cancel: Rc<dyn Fn()>,
     ) {
         self.dismiss_delete_progress();
         let Some(window_overlay) = self
@@ -1614,13 +1627,13 @@ impl ViewState {
             progress,
             status,
         }));
-        let browser = self.browser.clone();
-        cancel.connect_clicked(move |_| browser.cancel_file_operation());
+        let cancel_action = on_cancel.clone();
+        cancel.connect_clicked(move |_| cancel_action());
         let escape = gtk::EventControllerKey::new();
-        let escape_browser = self.browser.clone();
+        let escape_action = on_cancel;
         escape.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
-                escape_browser.cancel_file_operation();
+                escape_action();
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
@@ -1669,6 +1682,36 @@ impl ViewState {
         dismiss_modal_layer(&view.layer, &view.overlay, view.blurred_root.as_ref());
     }
 
+    /// The total item count isn't known upfront -- entries are deleted as they're enumerated,
+    /// one bounded batch at a time -- so this pulses rather than fills to a fraction.
+    fn show_empty_trash_progress(self: &Rc<Self>, on_cancel: Rc<dyn Fn()>) {
+        self.show_file_operation_progress(
+            0,
+            crate::assets::icons::TRASH,
+            "Emptying Trash",
+            "This may take a moment",
+            on_cancel,
+        );
+        self.update_empty_trash_progress(0);
+    }
+
+    fn update_empty_trash_progress(&self, processed: usize) {
+        let progress_view = self.delete_progress.borrow();
+        let Some(view) = progress_view.as_ref() else {
+            return;
+        };
+        view.status
+            .set_text(&format!("{} deleted", item_count_label(processed)));
+        view.progress.pulse();
+    }
+
+    /// Safe to call more than once: whichever of cancel or completion runs first leaves the
+    /// other a no-op.
+    fn clear_empty_trash(&self) {
+        self.pending_empty_trash.borrow_mut().take();
+        self.dismiss_delete_progress();
+    }
+
     fn load_trash_summary(self: &Rc<Self>) {
         let trash_empty = self
             .columns
@@ -1679,6 +1722,143 @@ impl ViewState {
         if trash_empty {
             return;
         }
+        self.show_trash_loading_indicator();
+        let weak = Rc::downgrade(self);
+        let started = Instant::now();
+        let task = glib::MainContext::default().spawn_local(async move {
+            // Let GTK paint the loading dialog before beginning a walk whose GIO futures may be
+            // immediately ready for long stretches on a fast local trash backend.
+            glib::timeout_future(Duration::from_millis(16)).await;
+            let trash = gio::File::for_uri("trash:///");
+            match summarize_trash(&trash).await {
+                Ok(summary) if summary.item_count > 0 => {
+                    if summary.truncated {
+                        tracing::warn!(
+                            item_count = summary.item_count,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "trash summary truncated"
+                        );
+                    } else {
+                        tracing::info!(
+                            item_count = summary.item_count,
+                            elapsed_ms = started.elapsed().as_millis() as u64,
+                            "trash summary built"
+                        );
+                    }
+                    if let Some(state) = weak.upgrade() {
+                        state.clear_trash_loading();
+                        state.show_empty_trash_confirmation(summary);
+                    }
+                }
+                Ok(_) => {
+                    if let Some(state) = weak.upgrade() {
+                        state.clear_trash_loading();
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error_domain = ?error.domain(),
+                        error_code = error.code(),
+                        "trash summary failed"
+                    );
+                    if let Some(state) = weak.upgrade() {
+                        state.clear_trash_loading();
+                        show_error_dialog(
+                            &state.overlay,
+                            "Unable to read Trash",
+                            &error.to_string(),
+                        );
+                    }
+                }
+            }
+        });
+        self.pending_trash_summary
+            .replace(Some(LoadHandle::new(move || {
+                tracing::debug!("trash summary cancelled");
+                task.abort();
+            })));
+    }
+
+    /// The walk is bounded but can still take a few seconds on a large trash, hence the indicator.
+    fn show_trash_loading_indicator(self: &Rc<Self>) {
+        self.dismiss_trash_loading();
+        let Some(window_overlay) = self
+            .overlay
+            .root()
+            .and_downcast::<gtk::Window>()
+            .and_then(|window| window.child())
+            .and_downcast::<gtk::Overlay>()
+        else {
+            return;
+        };
+        let blurred_root = window_overlay.child().and_downcast::<BlurBin>();
+        if let Some(root) = blurred_root.as_ref() {
+            root.set_blurred(true);
+        }
+
+        let layout = modal_layout(
+            crate::assets::icons::TRASH,
+            "Measuring Trash…",
+            "",
+            "Empty Trash",
+        );
+        layout.set_loading(true, Some("Measuring Trash…"));
+        layout.subtitle.set_visible(false);
+        layout.confirm.set_visible(false);
+        let explanation = message_dialog_description(
+            "Calculating the number and size of items. This may take a few seconds.",
+        );
+        layout.body.append(&explanation);
+        let content = layout.content;
+        let cancel = layout.cancel;
+
+        let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
+        window_overlay.add_overlay(&layer);
+        self.trash_loading.replace(Some(TrashLoadingView {
+            layer,
+            overlay: window_overlay,
+            blurred_root,
+        }));
+
+        let weak = Rc::downgrade(self);
+        cancel.connect_clicked(move |_| {
+            if let Some(state) = weak.upgrade() {
+                state.clear_trash_loading();
+            }
+        });
+        let escape = gtk::EventControllerKey::new();
+        let weak_escape = Rc::downgrade(self);
+        escape.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                if let Some(state) = weak_escape.upgrade() {
+                    state.clear_trash_loading();
+                }
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        if let Some(view) = self.trash_loading.borrow().as_ref() {
+            view.layer.add_controller(escape);
+        }
+        cancel.grab_focus();
+    }
+
+    fn dismiss_trash_loading(&self) {
+        let Some(view) = self.trash_loading.take() else {
+            return;
+        };
+        dismiss_modal_layer(&view.layer, &view.overlay, view.blurred_root.as_ref());
+    }
+
+    /// Safe to call more than once: whichever of cancel or completion runs first leaves the
+    /// other a no-op.
+    fn clear_trash_loading(&self) {
+        self.pending_trash_summary.borrow_mut().take();
+        self.dismiss_trash_loading();
+    }
+
+    fn show_empty_trash_confirmation(self: &Rc<Self>, summary: TrashSummary) {
         let Some(window_overlay) = self
             .overlay
             .root()
@@ -1696,23 +1876,24 @@ impl ViewState {
         let layout = message_dialog_layout(
             crate::assets::icons::TRASH,
             "Empty Trash?",
-            "Calculating items and size…",
+            &format!(
+                "{}{} · {}{} will be reclaimed",
+                if summary.truncated { "At least " } else { "" },
+                item_count_label(summary.item_count),
+                if summary.truncated { "at least " } else { "" },
+                format_file_size(summary.total_size)
+            ),
             "Empty Trash",
             ModalTone::Danger,
         );
         let explanation = message_dialog_description(
             "Everything in Trash will be permanently deleted. This action cannot be undone.",
         );
-        layout.set_loading(true, Some("Calculating Trash contents…"));
         layout.body.append(&explanation);
-        layout.confirm.set_sensitive(false);
-        let subtitle = layout.subtitle.clone();
-        let loading = layout.loading.clone();
         let content = layout.content;
         let close = layout.close;
         let cancel = layout.cancel;
         let empty = layout.confirm;
-        let entries = Rc::new(RefCell::new(None::<Vec<FileEntry>>));
 
         let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
         window_overlay.add_overlay(&layer);
@@ -1735,17 +1916,72 @@ impl ViewState {
         let empty_layer = layer.clone();
         let empty_overlay = window_overlay.clone();
         let empty_root = blurred_root.clone();
-        let empty_entries = entries.clone();
         let browser = self.browser.clone();
+        let error_overlay = self.overlay.clone();
+        let weak_ui = Rc::downgrade(self);
         empty.connect_clicked(move |_| {
-            let Some(entries) = empty_entries.borrow().clone() else {
-                return;
-            };
             dismiss_modal_layer(&empty_layer, &empty_overlay, empty_root.as_ref());
-            if !entries.is_empty() {
-                browser.delete(entries, true);
-            }
             browser.focus_active();
+
+            let cancel_ui = weak_ui.clone();
+            let on_cancel: Rc<dyn Fn()> = Rc::new(move || {
+                if let Some(ui) = cancel_ui.upgrade() {
+                    ui.clear_empty_trash();
+                }
+            });
+            if let Some(ui) = weak_ui.upgrade() {
+                ui.show_empty_trash_progress(on_cancel);
+            }
+
+            let error_overlay = error_overlay.clone();
+            let progress_ui = weak_ui.clone();
+            let finish_ui = weak_ui.clone();
+            let finish_browser = browser.clone();
+            let task = glib::MainContext::default().spawn_local(async move {
+                let trash = gio::File::for_uri("trash:///");
+                let result = empty_trash(&trash, move |processed| {
+                    if let Some(ui) = progress_ui.upgrade() {
+                        ui.update_empty_trash_progress(processed);
+                    }
+                })
+                .await;
+                if let Some(ui) = finish_ui.upgrade() {
+                    ui.clear_empty_trash();
+                }
+                match result {
+                    Ok(outcome) => {
+                        // A wholesale refresh rather than tracking each deleted location, to
+                        // keep this operation's own state bounded too.
+                        finish_browser.refresh_columns_at(&Location::uri("trash:///"));
+                        if outcome.failed > 0 {
+                            show_error_dialog(
+                                &error_overlay,
+                                "Completed with errors",
+                                &empty_trash_error_summary(&outcome),
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            error_domain = ?error.domain(),
+                            error_code = error.code(),
+                            "empty trash failed"
+                        );
+                        show_error_dialog(
+                            &error_overlay,
+                            "Unable to empty Trash",
+                            &error.to_string(),
+                        );
+                    }
+                }
+            });
+            if let Some(ui) = weak_ui.upgrade() {
+                ui.pending_empty_trash
+                    .replace(Some(LoadHandle::new(move || {
+                        tracing::debug!("empty trash cancelled");
+                        task.abort();
+                    })));
+            }
         });
         let keys = gtk::EventControllerKey::new();
         let escape_layer = layer.clone();
@@ -1774,42 +2010,6 @@ impl ViewState {
             initial_focus.grab_focus();
             if let Some(window) = initial_focus.root().and_downcast::<gtk::Window>() {
                 window.set_focus_visible(true);
-            }
-        });
-
-        let result_layer = layer.clone();
-        let result_overlay = window_overlay;
-        let result_root = blurred_root;
-        let result_parent = self.overlay.clone();
-        glib::MainContext::default().spawn_local(async move {
-            let result = summarize_trash(&gio::File::for_uri("trash:///")).await;
-            if result_layer.parent().is_none() {
-                return;
-            }
-            loading.stop();
-            loading.set_visible(false);
-            match result {
-                Ok(summary) if summary.entries.is_empty() => {
-                    subtitle.set_text("Trash is empty");
-                    explanation.set_text("There is nothing to delete.");
-                    empty.set_label("Close");
-                    empty.remove_css_class("danger");
-                    entries.replace(Some(Vec::new()));
-                    empty.set_sensitive(true);
-                }
-                Ok(summary) => {
-                    subtitle.set_text(&format!(
-                        "{} · {} will be reclaimed",
-                        item_count_label(summary.item_count),
-                        format_file_size(summary.total_size)
-                    ));
-                    entries.replace(Some(summary.entries));
-                    empty.set_sensitive(true);
-                }
-                Err(error) => {
-                    dismiss_modal_layer(&result_layer, &result_overlay, result_root.as_ref());
-                    show_error_dialog(&result_parent, "Unable to read Trash", &error.to_string());
-                }
             }
         });
     }
@@ -2533,8 +2733,12 @@ impl ViewState {
                 };
                 match summary {
                     Ok(summary) => {
-                        size.set_text(&format_file_size(summary.total_size));
-                        size.set_tooltip_text(Some(&item_count_label(summary.item_count)));
+                        let prefix = if summary.truncated { "≥ " } else { "" };
+                        size.set_text(&format!("{prefix}{}", format_file_size(summary.total_size)));
+                        size.set_tooltip_text(Some(&format!(
+                            "{prefix}{}",
+                            item_count_label(summary.item_count)
+                        )));
                     }
                     Err(_) => size.set_text("Unavailable"),
                 }
@@ -3345,22 +3549,30 @@ impl ViewState {
                     rename.field.grab_focus();
                 }
             }
-            BrowserEvent::DeletionStarted { total } => self.show_file_operation_progress(
-                total,
-                crate::assets::icons::TRASH,
-                "Deleting items",
-                "This may take a moment",
-            ),
+            BrowserEvent::DeletionStarted { total } => {
+                let browser = self.browser.clone();
+                self.show_file_operation_progress(
+                    total,
+                    crate::assets::icons::TRASH,
+                    "Deleting items",
+                    "This may take a moment",
+                    Rc::new(move || browser.cancel_file_operation()),
+                );
+            }
             BrowserEvent::DeletionProgress { completed, total } => {
                 self.update_delete_progress(completed, total);
             }
             BrowserEvent::DeletionFinished => self.dismiss_delete_progress(),
-            BrowserEvent::RestorationStarted { total } => self.show_file_operation_progress(
-                total,
-                crate::assets::icons::FOLDER,
-                "Restoring items",
-                "Items are being returned to their original locations",
-            ),
+            BrowserEvent::RestorationStarted { total } => {
+                let browser = self.browser.clone();
+                self.show_file_operation_progress(
+                    total,
+                    crate::assets::icons::FOLDER,
+                    "Restoring items",
+                    "Items are being returned to their original locations",
+                    Rc::new(move || browser.cancel_file_operation()),
+                );
+            }
             BrowserEvent::RestorationProgress { completed, total } => {
                 self.update_delete_progress(completed, total);
             }
@@ -3401,11 +3613,13 @@ impl ViewState {
                 }
             },
             BrowserEvent::ArchiveStarted { total } => {
+                let browser = self.browser.clone();
                 self.show_file_operation_progress(
                     total,
                     crate::assets::icons::FILE_ARCHIVE,
                     "Working",
                     "This may take a moment",
+                    Rc::new(move || browser.cancel_file_operation()),
                 );
             }
             BrowserEvent::ArchiveProgress { completed, total } => {
@@ -5135,14 +5349,29 @@ pub(super) fn entry_supports_quick_preview(entry: &FileEntry) -> bool {
 }
 
 struct TrashSummary {
-    entries: Vec<FileEntry>,
     item_count: usize,
     total_size: u64,
+    /// `true` if measurement did not cover the full trash tree; `item_count`/`total_size` are
+    /// then a lower bound.
+    truncated: bool,
 }
 
 const TRASH_ATTRIBUTES: &str = "standard::display-name,standard::name,standard::type,standard::is-symlink,standard::size,time::modified";
 
+const MAX_TRASH_ENTRIES: usize = 200_000;
+const MAX_TRASH_DEPTH: usize = 64;
+const TRASH_TIME_BUDGET: Duration = Duration::from_secs(5);
+
 async fn summarize_trash(root: &gio::File) -> Result<TrashSummary, glib::Error> {
+    summarize_trash_with_budget(root, MAX_TRASH_ENTRIES, MAX_TRASH_DEPTH, TRASH_TIME_BUDGET).await
+}
+
+async fn summarize_trash_with_budget(
+    root: &gio::File,
+    max_entries: usize,
+    max_depth: usize,
+    time_budget: Duration,
+) -> Result<TrashSummary, glib::Error> {
     let enumerator = root
         .enumerate_children_future(
             TRASH_ATTRIBUTES,
@@ -5150,9 +5379,80 @@ async fn summarize_trash(root: &gio::File) -> Result<TrashSummary, glib::Error> 
             glib::Priority::DEFAULT,
         )
         .await?;
-    let mut entries = Vec::new();
     let mut item_count = 0_usize;
     let mut total_size = 0_u64;
+    let mut truncated = false;
+    let visited = Rc::new(Cell::new(0_usize));
+    let deadline = Instant::now() + time_budget;
+    'root: loop {
+        let children = enumerator
+            .next_files_future(64, glib::Priority::DEFAULT)
+            .await?;
+        if children.is_empty() {
+            break;
+        }
+        glib::timeout_future(Duration::from_millis(1)).await;
+        for info in children {
+            if visited.get() >= max_entries || Instant::now() >= deadline {
+                truncated = true;
+                break 'root;
+            }
+            let (count, size, entry_truncated) = measure_trash_entry(
+                root.child(info.name()),
+                info,
+                0,
+                visited.clone(),
+                deadline,
+                max_entries,
+                max_depth,
+            )
+            .await?;
+            item_count = item_count.saturating_add(count);
+            total_size = total_size.saturating_add(size);
+            truncated |= entry_truncated;
+        }
+        // Stop only when the shared budget is actually spent -- a child's own `truncated` (depth
+        // cap, discarded error) is branch-local and must not cut off its unrelated siblings.
+        if visited.get() >= max_entries || Instant::now() >= deadline {
+            truncated = true;
+            break;
+        }
+    }
+    Ok(TrashSummary {
+        item_count,
+        total_size,
+        truncated,
+    })
+}
+
+struct EmptyTrashOutcome {
+    deleted: usize,
+    failed: usize,
+    /// Capped at 8 messages regardless of `failed`, so a trash full of failures can't grow this
+    /// without bound.
+    errors: Vec<String>,
+}
+
+/// Empties `root` by enumerating and deleting one batch at a time -- unlike a listing that
+/// collects every top-level entry into a `Vec<FileEntry>` first, no per-entry list is ever
+/// retained here; only a running count and a capped error list, so memory stays flat no matter
+/// how large the trash is.
+async fn empty_trash(
+    root: &gio::File,
+    mut on_progress: impl FnMut(usize),
+) -> Result<EmptyTrashOutcome, glib::Error> {
+    let enumerator = root
+        .enumerate_children_future(
+            TRASH_ATTRIBUTES,
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            glib::Priority::DEFAULT,
+        )
+        .await?;
+    let mut outcome = EmptyTrashOutcome {
+        deleted: 0,
+        failed: 0,
+        errors: Vec::new(),
+    };
     loop {
         let children = enumerator
             .next_files_future(64, glib::Priority::DEFAULT)
@@ -5162,80 +5462,148 @@ async fn summarize_trash(root: &gio::File) -> Result<TrashSummary, glib::Error> 
         }
         for info in children {
             let file = root.child(info.name());
-            let (count, size) = measure_trash_entry(file.clone(), info.clone()).await?;
-            item_count = item_count.saturating_add(count);
-            total_size = total_size.saturating_add(size);
-            entries.push(trash_file_entry(file, &info));
+            match file.delete_future(glib::Priority::DEFAULT).await {
+                Ok(_) => outcome.deleted += 1,
+                Err(error) => {
+                    outcome.failed += 1;
+                    if outcome.errors.len() < 8 {
+                        outcome
+                            .errors
+                            .push(format!("{}: {error}", info.display_name()));
+                    }
+                }
+            }
         }
+        on_progress(outcome.deleted + outcome.failed);
     }
-    Ok(TrashSummary {
-        entries,
-        item_count,
-        total_size,
-    })
+    Ok(outcome)
 }
 
-type TrashMeasurementFuture = Pin<Box<dyn Future<Output = Result<(usize, u64), glib::Error>>>>;
+fn empty_trash_error_summary(outcome: &EmptyTrashOutcome) -> String {
+    let mut summary = format!(
+        "{} could not be deleted. The remaining items were processed.",
+        item_count_label(outcome.failed)
+    );
+    for error in &outcome.errors {
+        summary.push_str("\n\n• ");
+        summary.push_str(error);
+    }
+    if outcome.failed > outcome.errors.len() {
+        summary.push_str(&format!(
+            "\n\n…and {} more",
+            outcome.failed - outcome.errors.len()
+        ));
+    }
+    summary
+}
 
-fn measure_trash_entry(file: gio::File, info: gio::FileInfo) -> TrashMeasurementFuture {
+type TrashMeasurementFuture =
+    Pin<Box<dyn Future<Output = Result<(usize, u64, bool), glib::Error>>>>;
+
+/// `visited` is shared across the whole walk, so the entry budget applies tree-wide rather than
+/// per-branch, and `deadline` is a fixed point so descending deeper can't reset the time budget.
+fn measure_trash_entry(
+    file: gio::File,
+    info: gio::FileInfo,
+    depth: usize,
+    visited: Rc<Cell<usize>>,
+    deadline: Instant,
+    max_entries: usize,
+    max_depth: usize,
+) -> TrashMeasurementFuture {
     Box::pin(async move {
+        visited.set(visited.get() + 1);
         let mut count = 1_usize;
         let mut size = if info.file_type() == gio::FileType::Regular {
             info.size().max(0) as u64
         } else {
             0
         };
+        let mut truncated = false;
         if info.file_type() == gio::FileType::Directory && !info.is_symlink() {
-            let enumerator = file
-                .enumerate_children_future(
-                    TRASH_ATTRIBUTES,
-                    gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
-                    glib::Priority::DEFAULT,
+            let budget_exhausted =
+                depth >= max_depth || visited.get() >= max_entries || Instant::now() >= deadline;
+            if budget_exhausted {
+                truncated = true;
+            } else {
+                // A directory can become unreadable or disappear before we measure it; degrade
+                // this branch to truncated rather than failing the whole walk.
+                match enumerate_trash_directory(
+                    &file,
+                    depth,
+                    visited.clone(),
+                    deadline,
+                    max_entries,
+                    max_depth,
                 )
-                .await?;
-            loop {
-                let children = enumerator
-                    .next_files_future(64, glib::Priority::DEFAULT)
-                    .await?;
-                if children.is_empty() {
-                    break;
-                }
-                for child in children {
-                    let (child_count, child_size) =
-                        measure_trash_entry(file.child(child.name()), child).await?;
-                    count = count.saturating_add(child_count);
-                    size = size.saturating_add(child_size);
+                .await
+                {
+                    Ok((child_count, child_size, child_truncated)) => {
+                        count = count.saturating_add(child_count);
+                        size = size.saturating_add(child_size);
+                        truncated |= child_truncated;
+                    }
+                    Err(_) => truncated = true,
                 }
             }
         }
-        Ok((count, size))
+        Ok((count, size, truncated))
     })
 }
 
-fn trash_file_entry(file: gio::File, info: &gio::FileInfo) -> FileEntry {
-    let kind = match (info.file_type(), info.is_symlink()) {
-        (gio::FileType::Directory, true) => EntryKind::DirectorySymbolicLink,
-        (gio::FileType::Regular, true) => EntryKind::FileSymbolicLink,
-        (gio::FileType::Directory, false) => EntryKind::Directory,
-        (gio::FileType::Regular, false) => EntryKind::File,
-        (gio::FileType::SymbolicLink, _) => EntryKind::SymbolicLink,
-        _ => EntryKind::Other,
-    };
-    FileEntry {
-        location: location_for_gio_file(&file),
-        native_name: info.name().into_os_string(),
-        display_name: info.display_name().to_string(),
-        kind,
-        size: if matches!(kind, EntryKind::File | EntryKind::FileSymbolicLink) {
-            crate::model::MetadataValue::Known(info.size().max(0) as u64)
-        } else {
-            crate::model::MetadataValue::Unknown
-        },
-        modified_unix_seconds: info
-            .modification_date_time()
-            .map(|time| crate::model::MetadataValue::Known(time.to_unix()))
-            .unwrap_or(crate::model::MetadataValue::Unavailable),
+async fn enumerate_trash_directory(
+    file: &gio::File,
+    depth: usize,
+    visited: Rc<Cell<usize>>,
+    deadline: Instant,
+    max_entries: usize,
+    max_depth: usize,
+) -> Result<(usize, u64, bool), glib::Error> {
+    let enumerator = file
+        .enumerate_children_future(
+            TRASH_ATTRIBUTES,
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            glib::Priority::DEFAULT,
+        )
+        .await?;
+    let mut count = 0_usize;
+    let mut size = 0_u64;
+    let mut truncated = false;
+    'this_directory: loop {
+        let children = enumerator
+            .next_files_future(64, glib::Priority::DEFAULT)
+            .await?;
+        if children.is_empty() {
+            break;
+        }
+        glib::timeout_future(Duration::from_millis(1)).await;
+        for child in children {
+            if visited.get() >= max_entries || Instant::now() >= deadline {
+                truncated = true;
+                break 'this_directory;
+            }
+            let (child_count, child_size, child_truncated) = measure_trash_entry(
+                file.child(child.name()),
+                child,
+                depth + 1,
+                visited.clone(),
+                deadline,
+                max_entries,
+                max_depth,
+            )
+            .await?;
+            count = count.saturating_add(child_count);
+            size = size.saturating_add(child_size);
+            truncated |= child_truncated;
+        }
+        // Stop only when the shared budget is actually spent -- a child's own `truncated` (depth
+        // cap, discarded error) is branch-local and must not cut off its unrelated siblings.
+        if visited.get() >= max_entries || Instant::now() >= deadline {
+            truncated = true;
+            break;
+        }
     }
+    Ok((count, size, truncated))
 }
 
 fn selected_items_summary(entries: &[FileEntry]) -> String {

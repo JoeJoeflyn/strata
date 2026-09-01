@@ -1111,7 +1111,7 @@ impl ViewState {
         let cancel = layout.cancel;
         let replace = layout.confirm;
 
-        let layer = modal_layer(&content);
+        let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
         window_overlay.add_overlay(&layer);
         let cancel_layer = layer.clone();
         let cancel_overlay = window_overlay.clone();
@@ -1379,7 +1379,12 @@ impl ViewState {
             );
         });
 
-        let layer = modal_layer(&content);
+        let layer = modal_layer(
+            &content,
+            &window_overlay,
+            blurred_root.clone(),
+            Some(creating_destination.clone()),
+        );
         window_overlay.add_overlay(&layer);
         let cancel_layer = layer.clone();
         let cancel_overlay = window_overlay.clone();
@@ -1589,7 +1594,7 @@ impl ViewState {
         let content = layout.content;
         let cancel = layout.confirm;
 
-        let layer = modal_layer(&content);
+        let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
         window_overlay.add_overlay(&layer);
         self.delete_progress.replace(Some(DeleteProgressView {
             layer,
@@ -1689,7 +1694,7 @@ impl ViewState {
         let empty = layout.confirm;
         let entries = Rc::new(RefCell::new(None::<Vec<FileEntry>>));
 
-        let layer = modal_layer(&content);
+        let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
         window_overlay.add_overlay(&layer);
         let cancel_layer = layer.clone();
         let cancel_overlay = window_overlay.clone();
@@ -1872,7 +1877,7 @@ impl ViewState {
         let cancel = layout.cancel;
         let confirm = layout.confirm;
 
-        let layer = modal_layer(&content);
+        let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
         window_overlay.add_overlay(&layer);
         let cancelled_layer = layer.clone();
         let cancelled_overlay = window_overlay.clone();
@@ -1980,7 +1985,7 @@ impl ViewState {
             subtitle,
             confirm_label,
         );
-        let layer = modal_layer(&layout.content);
+        let layer = modal_layer(&layout.content, &window_overlay, blurred_root.clone(), None);
         window_overlay.add_overlay(&layer);
 
         let dismiss: Rc<dyn Fn()> = Rc::new({
@@ -2404,7 +2409,7 @@ impl ViewState {
         layout.actions.prepend(&actions);
         let content = layout.content;
 
-        let layer = modal_layer(&content);
+        let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
         window_overlay.add_overlay(&layer);
         let closing_layer = layer.clone();
         let closing_overlay = window_overlay.clone();
@@ -6188,7 +6193,16 @@ fn vim_focus_direction(key: gtk::gdk::Key) -> Option<gtk::DirectionType> {
     }
 }
 
-pub(super) fn modal_layer(content: &impl IsA<gtk::Widget>) -> gtk::Box {
+#[expect(
+    deprecated,
+    reason = "GTK 4.12 deprecated translate_coordinates and allocation without a replacement for click-in-bounds checks"
+)]
+pub(super) fn modal_layer(
+    content: &impl IsA<gtk::Widget>,
+    overlay: &gtk::Overlay,
+    root: Option<BlurBin>,
+    block_dismiss: Option<Rc<Cell<bool>>>,
+) -> gtk::Box {
     let layer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     layer.add_css_class("app-modal-layer");
     layer.add_css_class("modal-backdrop");
@@ -6201,9 +6215,50 @@ pub(super) fn modal_layer(content: &impl IsA<gtk::Widget>) -> gtk::Box {
     top.set_vexpand(true);
     let bottom = gtk::Box::new(gtk::Orientation::Vertical, 0);
     bottom.set_vexpand(true);
+    let left = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    left.set_hexpand(true);
+    let right = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    right.set_hexpand(true);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    row.append(&left);
+    row.append(content);
+    row.append(&right);
     layer.append(&top);
-    layer.append(content);
+    layer.append(&row);
     layer.append(&bottom);
+
+    let click = gtk::GestureClick::new();
+    let weak_layer = layer.downgrade();
+    let weak_content = content.downgrade();
+    let overlay = overlay.clone();
+    let root = root.clone();
+    let block = block_dismiss.clone();
+    click.connect_pressed(move |_, _, x, y| {
+        if let Some(block) = block.as_ref()
+            && block.get()
+        {
+            return;
+        }
+        let Some(layer) = weak_layer.upgrade() else {
+            return;
+        };
+        let Some(content) = weak_content.upgrade() else {
+            return;
+        };
+        let on_dialog = content
+            .translate_coordinates(&layer, 0.0, 0.0)
+            .is_some_and(|(cx, cy)| {
+                let alloc = content.allocation();
+                x >= cx
+                    && x < cx + alloc.width() as f64
+                    && y >= cy
+                    && y < cy + alloc.height() as f64
+            });
+        if !on_dialog {
+            dismiss_modal_layer(&layer, &overlay, root.as_ref());
+        }
+    });
+    layer.add_controller(click);
     layer
 }
 
@@ -6373,7 +6428,7 @@ fn show_authentication_dialog(
         }
     });
 
-    let layer = modal_layer(&content);
+    let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
     window_overlay.add_overlay(&layer);
 
     let cancel_operation = operation.cloned();
@@ -6777,7 +6832,7 @@ pub(super) fn show_error_dialog(parent: &impl IsA<gtk::Widget>, message: &str, d
     let close_icon = layout.close;
     let close = layout.confirm;
 
-    let layer = modal_layer(&content);
+    let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
     window_overlay.add_overlay(&layer);
     let close_layer = layer.clone();
     let close_overlay = window_overlay.clone();

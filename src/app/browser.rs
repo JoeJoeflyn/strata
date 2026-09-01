@@ -126,9 +126,16 @@ pub enum BrowserEvent {
         error: LocationValidationError,
     },
     EmptyTrashRequested,
-    ArchiveStarted { total: usize },
-    ArchiveProgress { completed: usize, total: usize },
-    ArchiveCompleted { select_name: String },
+    ArchiveStarted {
+        total: usize,
+    },
+    ArchiveProgress {
+        completed: usize,
+        total: usize,
+    },
+    ArchiveCompleted {
+        select_name: String,
+    },
     TransferCompleted,
 }
 
@@ -899,7 +906,12 @@ impl Browser {
         self.operation_load.replace(Some(load));
     }
 
-    pub fn extract(self: &Rc<Self>, entry: FileEntry, destination: Location, password: Option<String>) {
+    pub fn extract(
+        self: &Rc<Self>,
+        entry: FileEntry,
+        destination: Location,
+        password: Option<String>,
+    ) {
         let Some(provider) = self.operation_provider.borrow().clone() else {
             self.emit(BrowserEvent::OperationFailed {
                 message: "File operations are unavailable".to_owned(),
@@ -1361,10 +1373,7 @@ impl Browser {
         let Some(column) = state.columns.get(depth) else {
             return;
         };
-        let position = column
-            .entries
-            .iter()
-            .position(|e| e.display_name == name);
+        let position = column.entries.iter().position(|e| e.display_name == name);
         drop(state);
         if let Some(position) = position {
             self.set_selection(depth, &[position], Some(position));

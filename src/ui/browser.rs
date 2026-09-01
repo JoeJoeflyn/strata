@@ -25,7 +25,7 @@ use crate::{
 use super::{
     blur::BlurBin,
     browser_modes::{BrowserDensity, BrowserMode, ModeViews},
-    controls::segmented_control,
+    controls::{form_entry, form_password_entry, modal_layout, segmented_control},
     motion::{animations_enabled, emphasized_deceleration},
 };
 
@@ -1284,7 +1284,9 @@ impl ViewState {
                 return;
             }
             if path.is_dir() {
-                transfer_state.pending_navigate.replace(Some(Location::local(path.clone())));
+                transfer_state
+                    .pending_navigate
+                    .replace(Some(Location::local(path.clone())));
                 transfer_state.start_transfer(Location::local(path), sources.clone(), move_sources);
                 dismiss_modal_layer(&confirm_layer, &confirm_overlay, confirm_root.as_ref());
                 return;
@@ -1313,7 +1315,9 @@ impl ViewState {
                     gio::spawn_blocking(move || std::fs::create_dir_all(&created_path)).await;
                 match result {
                     Ok(Ok(())) => {
-                        created_state.pending_navigate.replace(Some(Location::local(path.clone())));
+                        created_state
+                            .pending_navigate
+                            .replace(Some(Location::local(path.clone())));
                         created_state.start_transfer(
                             Location::local(path),
                             created_sources,
@@ -1390,7 +1394,7 @@ impl ViewState {
 
     fn show_file_operation_progress(
         self: &Rc<Self>,
-        total: usize,
+        _total: usize,
         icon: &str,
         title_text: &str,
         subtitle_text: &str,
@@ -1436,11 +1440,7 @@ impl ViewState {
 
         let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
         body.add_css_class("transfer-body");
-        let status = gtk::Label::new(Some(&if total > 0 {
-            format!("0%")
-        } else {
-            "0%".to_string()
-        }));
+        let status = gtk::Label::new(Some("0%"));
         status.add_css_class("delete-progress-status");
         status.set_xalign(0.0);
         let progress = gtk::ProgressBar::new();
@@ -1511,9 +1511,9 @@ impl ViewState {
             view.status.set_text(&format!("{completed} files"));
             view.progress.pulse();
         } else {
-            view.status.set_text(&format!("{completed} / {total} files"));
-            view.progress
-                .set_fraction(completed as f64 / total as f64);
+            view.status
+                .set_text(&format!("{completed} / {total} files"));
+            view.progress.set_fraction(completed as f64 / total as f64);
         }
     }
 
@@ -1864,68 +1864,20 @@ impl ViewState {
             .and_then(|window| window.child())
             .and_downcast::<gtk::Overlay>()
         else {
-            return (
-                gtk::Box::default(),
-                gtk::Button::default(),
-                Rc::new(|| {}),
-            );
+            return (gtk::Box::default(), gtk::Button::default(), Rc::new(|| {}));
         };
         let blurred_root = window_overlay.child().and_downcast::<BlurBin>();
         if let Some(root) = blurred_root.as_ref() {
             root.set_blurred(true);
         }
 
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        content.add_css_class("compress-dialog");
-        content.add_css_class("delete-confirmation-content");
-        content.set_halign(gtk::Align::Center);
-        content.set_valign(gtk::Align::Center);
-
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-        header.add_css_class("delete-confirmation-header");
-        let symbol = gtk::CenterBox::new();
-        symbol.add_css_class("delete-confirmation-symbol");
-        symbol.set_size_request(40, 40);
-        symbol.set_hexpand(false);
-        let symbol_icon = crate::assets::primary_icon(crate::assets::icons::FILE_ARCHIVE, 21);
-        symbol.set_center_widget(Some(&symbol_icon));
-        let heading = gtk::Box::new(gtk::Orientation::Vertical, 1);
-        heading.set_hexpand(true);
-        let title_label = gtk::Label::new(Some(title));
-        title_label.add_css_class("delete-confirmation-title");
-        title_label.set_xalign(0.0);
-        let subtitle_label = gtk::Label::new(Some(subtitle));
-        subtitle_label.add_css_class("delete-confirmation-subtitle");
-        subtitle_label.set_xalign(0.0);
-        heading.append(&title_label);
-        heading.append(&subtitle_label);
-        let close = gtk::Button::new();
-        close.add_css_class("delete-confirmation-close");
-        close.set_tooltip_text(Some("Cancel"));
-        close.set_child(Some(&crate::assets::text_icon(crate::assets::icons::X, 16)));
-        header.append(&symbol);
-        header.append(&heading);
-        header.append(&close);
-        content.append(&header);
-
-        let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
-        body.add_css_class("delete-confirmation-body");
-        content.append(&body);
-
-        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        actions.add_css_class("delete-confirmation-actions");
-        let action_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        action_spacer.set_hexpand(true);
-        let cancel = gtk::Button::with_label("Cancel");
-        cancel.add_css_class("delete-confirmation-cancel");
-        let confirm = gtk::Button::with_label(confirm_label);
-        confirm.add_css_class("compress-dialog-confirm");
-        actions.append(&action_spacer);
-        actions.append(&cancel);
-        actions.append(&confirm);
-        content.append(&actions);
-
-        let layer = modal_layer(&content);
+        let layout = modal_layout(
+            crate::assets::icons::FILE_ARCHIVE,
+            title,
+            subtitle,
+            confirm_label,
+        );
+        let layer = modal_layer(&layout.content);
         window_overlay.add_overlay(&layer);
 
         let dismiss: Rc<dyn Fn()> = Rc::new({
@@ -1935,9 +1887,9 @@ impl ViewState {
             move || dismiss_modal_layer(&layer, &overlay, root.as_ref())
         });
         let dismiss_for_cancel = dismiss.clone();
-        cancel.connect_clicked(move |_| dismiss_for_cancel());
+        layout.cancel.connect_clicked(move |_| dismiss_for_cancel());
         let dismiss_for_close = dismiss.clone();
-        close.connect_clicked(move |_| dismiss_for_close());
+        layout.close.connect_clicked(move |_| dismiss_for_close());
         let escape = gtk::EventControllerKey::new();
         let dismiss_for_escape = dismiss.clone();
         escape.connect_key_pressed(move |_, key, _, _| {
@@ -1949,16 +1901,17 @@ impl ViewState {
             }
         });
         layer.add_controller(escape);
-        (body, confirm, dismiss)
+        (layout.body, layout.confirm, dismiss)
     }
 
     fn show_compress_dialog(self: &Rc<Self>, entries: Vec<FileEntry>) {
         if entries.is_empty() {
             return;
         }
-        let destination = self.browser.active_location().unwrap_or_else(|| {
-            Location::local(glib::home_dir())
-        });
+        let destination = self
+            .browser
+            .active_location()
+            .unwrap_or_else(|| Location::local(glib::home_dir()));
 
         let default_name = if entries.len() == 1 {
             entries[0].display_name.clone()
@@ -1971,73 +1924,117 @@ impl ViewState {
         let (body, confirm, dismiss) = self.build_archive_modal(&title, &subtitle, "Compress");
 
         let name_label = gtk::Label::new(Some("Archive name"));
-        name_label.add_css_class("delete-confirmation-subtitle");
+        name_label.add_css_class("action-dialog-field-label");
         name_label.set_xalign(0.0);
-        let name_entry = gtk::Entry::new();
+        let name_entry = form_entry();
         name_entry.set_text(&default_name);
-        name_entry.add_css_class("compress-dialog-entry");
         body.append(&name_label);
         body.append(&name_entry);
 
         let format_label = gtk::Label::new(Some("Format"));
-        format_label.add_css_class("delete-confirmation-subtitle");
+        format_label.add_css_class("action-dialog-field-label");
         format_label.set_xalign(0.0);
-        let format_combo = gtk::DropDown::from_strings(&["ZIP", "7Z", "TAR.GZ", "TAR"]);
-        format_combo.add_css_class("compress-dialog-format");
+        let (format_control, format_options) =
+            segmented_control(&["ZIP", "7Z", "TAR.GZ", "TAR"], 0);
+        let selected_format = Rc::new(Cell::new(ArchiveFormat::Zip));
         body.append(&format_label);
-        body.append(&format_combo);
+        body.append(&format_control);
 
-        let password_label = gtk::Label::new(Some("Password (optional)"));
-        password_label.add_css_class("delete-confirmation-subtitle");
+        let protection_label = gtk::Label::new(Some("Protection"));
+        protection_label.add_css_class("action-dialog-field-label");
+        protection_label.set_xalign(0.0);
+        let (protection_control, protection_options) =
+            segmented_control(&["No password", "Password protected"], 0);
+        let no_password = protection_options[0].clone();
+        let password_protected = protection_options[1].clone();
+
+        let password_label = gtk::Label::new(Some("Password"));
+        password_label.add_css_class("action-dialog-field-label");
         password_label.set_xalign(0.0);
-        let password_entry = gtk::PasswordEntry::new();
+        let password_entry = form_password_entry();
         password_entry.set_show_peek_icon(true);
-        password_entry.add_css_class("compress-dialog-entry");
         let confirm_label = gtk::Label::new(Some("Confirm password"));
-        confirm_label.add_css_class("delete-confirmation-subtitle");
+        confirm_label.add_css_class("action-dialog-field-label");
         confirm_label.set_xalign(0.0);
-        let confirm_entry = gtk::PasswordEntry::new();
+        let confirm_entry = form_password_entry();
         confirm_entry.set_show_peek_icon(true);
-        confirm_entry.add_css_class("compress-dialog-entry");
-        let password_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        password_box.append(&password_label);
-        password_box.append(&password_entry);
-        password_box.append(&confirm_label);
-        password_box.append(&confirm_entry);
-        body.append(&password_box);
+        let password_fields = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        password_fields.append(&password_label);
+        password_fields.append(&password_entry);
+        password_fields.append(&confirm_label);
+        password_fields.append(&confirm_entry);
+        password_fields.set_visible(false);
 
-        let password_box_clone = password_box.clone();
-        let format_combo_for_signal = format_combo.clone();
-        let format_combo_for_handler = format_combo.clone();
-        format_combo_for_signal.connect_notify_local(Some("selected"), move |_, _| {
-            password_box_clone.set_visible(format_from_combo(&format_combo_for_handler).supports_password());
+        let protection_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        protection_box.append(&protection_label);
+        protection_box.append(&protection_control);
+        protection_box.append(&password_fields);
+        body.append(&protection_box);
+
+        let fields_for_protection = password_fields.clone();
+        let password_for_focus = password_entry.clone();
+        password_protected.connect_toggled(move |option| {
+            fields_for_protection.set_visible(option.is_active());
+            if option.is_active() {
+                password_for_focus.grab_focus();
+            }
         });
-        password_box.set_visible(format_from_combo(&format_combo).supports_password());
+
+        for (option, format) in format_options.into_iter().zip([
+            ArchiveFormat::Zip,
+            ArchiveFormat::SevenZ,
+            ArchiveFormat::TarGz,
+            ArchiveFormat::Tar,
+        ]) {
+            let selected_format = selected_format.clone();
+            let protection_for_format = protection_box.clone();
+            let no_password_for_format = no_password.clone();
+            option.connect_toggled(move |option| {
+                if !option.is_active() {
+                    return;
+                }
+                selected_format.set(format);
+                let supported = format.supports_password();
+                protection_for_format.set_visible(supported);
+                if !supported {
+                    no_password_for_format.set_active(true);
+                }
+            });
+        }
 
         let browser = self.browser.clone();
         let confirm_entries = entries.clone();
         let confirm_destination = destination.clone();
         let name_for_confirm = name_entry.clone();
-        let format_for_confirm = format_combo.clone();
+        let format_for_confirm = selected_format.clone();
         let password_for_confirm = password_entry.clone();
         let confirm_for_confirm = confirm_entry.clone();
+        let protected_for_confirm = password_protected.clone();
         let overlay_for_error = self.overlay.clone();
         let dismiss_for_confirm = dismiss.clone();
         confirm.connect_clicked(move |_| {
             let name = name_for_confirm.text().to_string();
-            let format = format_from_combo(&format_for_confirm);
-            let password = if format.supports_password() {
+            let format = format_for_confirm.get();
+            let password = if format.supports_password() && protected_for_confirm.is_active() {
                 let pw = password_for_confirm.text().to_string();
                 if pw.is_empty() {
-                    None
-                } else {
-                    let confirm_pw = confirm_for_confirm.text().to_string();
-                    if pw != confirm_pw {
-                        show_error_dialog(&overlay_for_error, "Passwords do not match", "Please enter the same password in both fields.");
-                        return;
-                    }
-                    Some(pw)
+                    show_error_dialog(
+                        &overlay_for_error,
+                        "Password required",
+                        "Enter a password or choose No password.",
+                    );
+                    return;
                 }
+                let confirm_pw = confirm_for_confirm.text().to_string();
+                if pw != confirm_pw {
+                    show_error_dialog(
+                        &overlay_for_error,
+                        "Passwords do not match",
+                        "Please enter the same password in both fields.",
+                    );
+                    return;
+                }
+                Some(pw)
             } else {
                 None
             };
@@ -2047,19 +2044,30 @@ impl ViewState {
                 name
             };
             dismiss_for_confirm();
-            browser.compress(confirm_entries.clone(), confirm_destination.clone(), archive_name, format, password);
+            browser.compress(
+                confirm_entries.clone(),
+                confirm_destination.clone(),
+                archive_name,
+                format,
+                password,
+            );
         });
         name_entry.grab_focus();
     }
 
     fn extract_entry(self: &Rc<Self>, entry: FileEntry) {
         let Some(parent) = entry.location.parent() else {
-            show_error_dialog(&self.overlay, "Cannot extract", "This archive has no parent directory.");
+            show_error_dialog(
+                &self.overlay,
+                "Cannot extract",
+                "This archive has no parent directory.",
+            );
             return;
         };
         let format = ArchiveFormat::from_extension(&entry.display_name);
         if format.map(|f| f.supports_password()).unwrap_or(false) {
-            self.pending_extract_retry.replace(Some((entry.clone(), parent.clone())));
+            self.pending_extract_retry
+                .replace(Some((entry.clone(), parent.clone())));
         }
         self.browser.extract(entry, parent, None);
     }
@@ -2212,13 +2220,13 @@ impl ViewState {
                 confirm_field.grab_focus();
                 return;
             }
-            if !path.exists() {
-                if let Err(e) = std::fs::create_dir_all(&path) {
-                    confirm_error.set_text(&format!("Could not create folder: {e}"));
-                    confirm_error.set_visible(true);
-                    confirm_field.add_css_class("error");
-                    return;
-                }
+            if !path.exists()
+                && let Err(e) = std::fs::create_dir_all(&path)
+            {
+                confirm_error.set_text(&format!("Could not create folder: {e}"));
+                confirm_error.set_visible(true);
+                confirm_field.add_css_class("error");
+                return;
             }
             let dest = Location::local(path);
             let format = ArchiveFormat::from_extension(&extract_entry.display_name);
@@ -2228,7 +2236,9 @@ impl ViewState {
                     .replace(Some((extract_entry.clone(), dest.clone())));
             }
             extract_state.pending_navigate.replace(Some(dest.clone()));
-            extract_state.browser.extract(extract_entry.clone(), dest, None);
+            extract_state
+                .browser
+                .extract(extract_entry.clone(), dest, None);
             dismiss_modal_layer(&confirm_layer, &confirm_overlay, confirm_root.as_ref());
         });
 
@@ -2236,14 +2246,14 @@ impl ViewState {
     }
 
     fn show_extract_password_dialog(self: &Rc<Self>, entry: FileEntry, destination: Location) {
-        let (body, confirm, dismiss) = self.build_archive_modal("Extract", &entry.display_name, "Extract");
+        let (body, confirm, dismiss) =
+            self.build_archive_modal("Extract", &entry.display_name, "Extract");
 
         let password_label = gtk::Label::new(Some("Password"));
-        password_label.add_css_class("delete-confirmation-subtitle");
+        password_label.add_css_class("action-dialog-field-label");
         password_label.set_xalign(0.0);
-        let password_entry = gtk::PasswordEntry::new();
+        let password_entry = form_password_entry();
         password_entry.set_show_peek_icon(true);
-        password_entry.add_css_class("compress-dialog-entry");
         body.append(&password_label);
         body.append(&password_entry);
 
@@ -3159,16 +3169,16 @@ impl ViewState {
                         column.presentation.show_content();
                     }
                 }
-                if self.browser.active_depth() == Some(depth) {
-                    if let Some(name) = self.pending_select.take() {
-                        let weak = Rc::downgrade(self);
-                        let name = name.clone();
-                        glib::idle_add_local_once(move || {
-                            if let Some(state) = weak.upgrade() {
-                                state.browser.select_entry_by_name(&name);
-                            }
-                        });
-                    }
+                if self.browser.active_depth() == Some(depth)
+                    && let Some(name) = self.pending_select.take()
+                {
+                    let weak = Rc::downgrade(self);
+                    let name = name.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Some(state) = weak.upgrade() {
+                            state.browser.select_entry_by_name(&name);
+                        }
+                    });
                 }
             }
             BrowserEvent::LoadFailed { depth, message } => {
@@ -4755,6 +4765,7 @@ pub(super) fn install_item_context_menu(
     let restore = item_context_option(crate::assets::icons::FOLDER, "Restore", "");
     restore.set_visible(in_trash);
     let pin = item_context_option(crate::assets::icons::PIN, "Pin to sidebar", "P");
+    let copy = item_context_option(crate::assets::icons::COPY, "Copy", "Ctrl+C");
     let copy_path = item_context_option(crate::assets::icons::COPY, "Copy path", "Y");
     let move_to = item_context_option(crate::assets::icons::FOLDER, "Move to…", "");
     let copy_to = item_context_option(crate::assets::icons::COPY, "Copy to…", "");
@@ -4775,29 +4786,32 @@ pub(super) fn install_item_context_menu(
     single.append(&open);
     single.append(&preview);
     single.append(&restore);
+    single.append(&extract);
+    single.append(&extract_to);
+    single.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     single.append(&pin);
+    single.append(&cut);
+    single.append(&copy);
     single.append(&copy_path);
     single.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     single.append(&move_to);
     single.append(&copy_to);
     single.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     single.append(&rename);
-    single.append(&cut);
-    single.append(&move_to_trash);
-    single.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     single.append(&compress);
-    single.append(&extract);
-    single.append(&extract_to);
     single.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     single.append(&properties);
+    single.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    single.append(&move_to_trash);
     content.append(&single);
 
     let multiple = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let restore_multiple = item_context_option(crate::assets::icons::FOLDER, "Restore items", "");
     restore_multiple.set_visible(in_trash);
+    let copy_multiple = item_context_option(crate::assets::icons::COPY, "Copy", "Ctrl+C");
     let copy_paths = item_context_option(crate::assets::icons::COPY, "Copy paths", "Y");
     let move_multiple = item_context_option(crate::assets::icons::FOLDER, "Move to…", "");
-    let copy_multiple = item_context_option(crate::assets::icons::COPY, "Copy to…", "");
+    let copy_to_multiple = item_context_option(crate::assets::icons::COPY, "Copy to…", "");
     let cut_multiple = item_context_option(crate::assets::icons::SCISSORS, "Cut", "Ctrl+X");
     let trash_multiple =
         item_context_danger_option(crate::assets::icons::TRASH, delete_label, "Del");
@@ -4805,15 +4819,16 @@ pub(super) fn install_item_context_menu(
     let compress_multiple =
         item_context_option(crate::assets::icons::FILE_ARCHIVE, "Compress…", "");
     multiple.append(&restore_multiple);
+    multiple.append(&cut_multiple);
+    multiple.append(&copy_multiple);
     multiple.append(&copy_paths);
     multiple.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     multiple.append(&move_multiple);
-    multiple.append(&copy_multiple);
-    multiple.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
-    multiple.append(&cut_multiple);
-    multiple.append(&trash_multiple);
+    multiple.append(&copy_to_multiple);
     multiple.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     multiple.append(&compress_multiple);
+    multiple.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
+    multiple.append(&trash_multiple);
     multiple.set_visible(false);
     content.append(&multiple);
 
@@ -4914,9 +4929,11 @@ pub(super) fn install_item_context_menu(
     connect_context_transfer(&move_to, &popover, state, &target, true);
     connect_context_transfer(&copy_to, &popover, state, &target, false);
     connect_context_transfer(&move_multiple, &popover, state, &target, true);
-    connect_context_transfer(&copy_multiple, &popover, state, &target, false);
+    connect_context_transfer(&copy_to_multiple, &popover, state, &target, false);
     connect_context_cut(&cut, &popover, state, &target);
     connect_context_cut(&cut_multiple, &popover, state, &target);
+    connect_context_copy(&copy, &popover, state, &target);
+    connect_context_copy(&copy_multiple, &popover, state, &target);
     connect_context_trash(&move_to_trash, &popover, state, &target, in_trash);
     connect_context_trash(&trash_multiple, &popover, state, &target, in_trash);
     connect_context_compress(&compress, &popover, state, &target);
@@ -5246,6 +5263,25 @@ fn connect_context_cut(
         }
         if let Some(state) = weak.upgrade() {
             state.cut_entries(&context_entries(&state, &target));
+        }
+    });
+}
+
+fn connect_context_copy(
+    button: &gtk::Button,
+    popover: &gtk::Popover,
+    state: &Rc<ViewState>,
+    target: &Rc<RefCell<Option<(usize, FileEntry)>>>,
+) {
+    let weak = Rc::downgrade(state);
+    let target = target.clone();
+    let popover = popover.downgrade();
+    button.connect_clicked(move |_| {
+        if let Some(popover) = popover.upgrade() {
+            popover.popdown();
+        }
+        if let Some(state) = weak.upgrade() {
+            state.copy_entries(&context_entries(&state, &target));
         }
     });
 }
@@ -6080,15 +6116,6 @@ fn item_count_label(count: usize) -> String {
     }
 }
 
-fn format_from_combo(combo: &gtk::DropDown) -> ArchiveFormat {
-    match combo.selected() {
-        0 => ArchiveFormat::Zip,
-        1 => ArchiveFormat::SevenZ,
-        2 => ArchiveFormat::TarGz,
-        _ => ArchiveFormat::Tar,
-    }
-}
-
 fn entry_kind_summary(entries: &[FileEntry]) -> String {
     let directories = entries.iter().filter(|entry| entry.is_directory()).count();
     let files = entries.len().saturating_sub(directories);
@@ -6266,22 +6293,19 @@ fn show_authentication_dialog(
     let credentials = gtk::Box::new(gtk::Orientation::Vertical, 10);
     credentials.add_css_class("authentication-fields");
 
-    let username = gtk::Entry::new();
-    username.add_css_class("transfer-field");
+    let username = form_entry();
     username.set_text(defaults.0);
     if flags.contains(gio::AskPasswordFlags::NEED_USERNAME) {
         append_authentication_field(&credentials, "Username", &username);
     }
 
-    let domain = gtk::Entry::new();
-    domain.add_css_class("transfer-field");
+    let domain = form_entry();
     domain.set_text(defaults.1);
     if flags.contains(gio::AskPasswordFlags::NEED_DOMAIN) {
         append_authentication_field(&credentials, "Domain", &domain);
     }
 
-    let password = gtk::PasswordEntry::new();
-    password.add_css_class("transfer-field");
+    let password = form_password_entry();
     password.set_show_peek_icon(true);
     if flags.contains(gio::AskPasswordFlags::NEED_PASSWORD) {
         append_authentication_field(&credentials, "Password", &password);

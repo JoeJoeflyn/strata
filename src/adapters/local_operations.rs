@@ -4,9 +4,14 @@
 mod tests;
 
 use std::{
-    future::Future, io, path::Path, pin::Pin, rc::Rc, sync::{
-        atomic::{AtomicUsize, Ordering},
+    future::Future,
+    io,
+    path::Path,
+    pin::Pin,
+    rc::Rc,
+    sync::{
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -554,11 +559,7 @@ impl OperationProvider for LocalOperationProvider {
         LoadHandle::new(move || task.abort())
     }
 
-    fn compress(
-        &self,
-        request: CompressRequest,
-        emit: Rc<dyn Fn(OperationEvent)>,
-    ) -> LoadHandle {
+    fn compress(&self, request: CompressRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
         let task = glib::MainContext::default().spawn_local(async move {
             let Some(dest_dir) = request.destination.native_path() else {
                 emit(OperationEvent::Failed {
@@ -596,10 +597,18 @@ impl OperationProvider for LocalOperationProvider {
                 let count = count_files(&entries);
                 work_total.store(count, Ordering::Relaxed);
                 match format {
-                    ArchiveFormat::Zip => compress_zip(&archive_path, &entries, password.as_deref(), &work_progress),
-                    ArchiveFormat::SevenZ => compress_7z(&archive_path, &entries, password.as_deref(), &work_progress),
-                    ArchiveFormat::TarGz => compress_tar(&archive_path, &entries, true, &work_progress),
-                    ArchiveFormat::Tar => compress_tar(&archive_path, &entries, false, &work_progress),
+                    ArchiveFormat::Zip => {
+                        compress_zip(&archive_path, &entries, password.as_deref(), &work_progress)
+                    }
+                    ArchiveFormat::SevenZ => {
+                        compress_7z(&archive_path, &entries, password.as_deref(), &work_progress)
+                    }
+                    ArchiveFormat::TarGz => {
+                        compress_tar(&archive_path, &entries, true, &work_progress)
+                    }
+                    ArchiveFormat::Tar => {
+                        compress_tar(&archive_path, &entries, false, &work_progress)
+                    }
                 }
             })
             .await;
@@ -622,13 +631,10 @@ impl OperationProvider for LocalOperationProvider {
         LoadHandle::new(move || task.abort())
     }
 
-    fn extract(
-        &self,
-        request: ExtractRequest,
-        emit: Rc<dyn Fn(OperationEvent)>,
-    ) -> LoadHandle {
+    fn extract(&self, request: ExtractRequest, emit: Rc<dyn Fn(OperationEvent)>) -> LoadHandle {
         let task = glib::MainContext::default().spawn_local(async move {
-            let Some(archive_path) = request.entry.location.native_path().map(Path::to_path_buf) else {
+            let Some(archive_path) = request.entry.location.native_path().map(Path::to_path_buf)
+            else {
                 emit(OperationEvent::Failed {
                     request_id: request.id,
                     message: "Archive must be a local file".to_owned(),
@@ -659,16 +665,28 @@ impl OperationProvider for LocalOperationProvider {
                     let file = std::fs::File::open(&archive_path).map_err(|e| e.to_string())?;
                     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
                     work_total.store(archive.len(), Ordering::Relaxed);
-                    extract_zip_from_archive(&mut archive, &dest_dir, password.as_deref(), &work_progress)
+                    extract_zip_from_archive(
+                        &mut archive,
+                        &dest_dir,
+                        password.as_deref(),
+                        &work_progress,
+                    )
                 }
                 Some(ArchiveFormat::SevenZ) => {
-                    let pw = password.as_deref().map(sevenz_rust2::Password::from).unwrap_or_default();
+                    let pw = password
+                        .as_deref()
+                        .map(sevenz_rust2::Password::from)
+                        .unwrap_or_default();
                     let reader = sevenz_rust2::ArchiveReader::open(&archive_path, pw)
                         .map_err(|e| e.to_string())?;
                     extract_7z_from_reader(reader, &dest_dir, &work_progress)
                 }
-                Some(ArchiveFormat::TarGz) => extract_tar(&archive_path, &dest_dir, true, &work_progress),
-                Some(ArchiveFormat::Tar) => extract_tar(&archive_path, &dest_dir, false, &work_progress),
+                Some(ArchiveFormat::TarGz) => {
+                    extract_tar(&archive_path, &dest_dir, true, &work_progress)
+                }
+                Some(ArchiveFormat::Tar) => {
+                    extract_tar(&archive_path, &dest_dir, false, &work_progress)
+                }
                 None => Err(format!("Unsupported archive format: {}", display_name)),
             })
             .await;
@@ -692,15 +710,20 @@ impl OperationProvider for LocalOperationProvider {
     }
 }
 
-fn compress_zip(archive_path: &Path, entries: &[std::path::PathBuf], password: Option<&str>, progress: &Arc<AtomicUsize>) -> Result<(), String> {
+fn compress_zip(
+    archive_path: &Path,
+    entries: &[std::path::PathBuf],
+    password: Option<&str>,
+    progress: &Arc<AtomicUsize>,
+) -> Result<(), String> {
     let file = std::fs::File::create(archive_path).map_err(|e| e.to_string())?;
     let writer = std::io::BufWriter::with_capacity(COPY_BUF, file);
     let mut writer = zip::ZipWriter::new(writer);
     let deflated = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .compression_level(Some(6));
-    let stored = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let stored =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     let deflated = if let Some(pw) = password {
         deflated.with_aes_encryption(zip::AesMode::Aes256, pw)
     } else {
@@ -720,10 +743,12 @@ fn compress_zip(archive_path: &Path, entries: &[std::path::PathBuf], password: O
         if entry.is_dir() {
             add_dir_to_zip(&mut writer, entry, &name, &deflated, &stored, progress)?;
         } else {
-            let opts = if is_incompressible(entry) { &stored } else { &deflated };
-            writer
-                .start_file(&name, *opts)
-                .map_err(|e| e.to_string())?;
+            let opts = if is_incompressible(entry) {
+                &stored
+            } else {
+                &deflated
+            };
+            writer.start_file(&name, *opts).map_err(|e| e.to_string())?;
             let f = std::fs::File::open(entry).map_err(|e| e.to_string())?;
             let f = std::io::BufReader::with_capacity(COPY_BUF, f);
             copy_with_big_buf(f, &mut writer).map_err(|e| e.to_string())?;
@@ -749,7 +774,11 @@ fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
         if path.is_dir() {
             add_dir_to_zip(writer, &path, &rel_name, deflated, stored, progress)?;
         } else {
-            let opts = if is_incompressible(&path) { stored } else { deflated };
+            let opts = if is_incompressible(&path) {
+                stored
+            } else {
+                deflated
+            };
             writer
                 .start_file(&rel_name, *opts)
                 .map_err(|e| e.to_string())?;
@@ -762,11 +791,18 @@ fn add_dir_to_zip<W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
-fn compress_tar(archive_path: &Path, entries: &[std::path::PathBuf], gzip: bool, progress: &Arc<AtomicUsize>) -> Result<(), String> {
+fn compress_tar(
+    archive_path: &Path,
+    entries: &[std::path::PathBuf],
+    gzip: bool,
+    progress: &Arc<AtomicUsize>,
+) -> Result<(), String> {
     let file = std::fs::File::create(archive_path).map_err(|e| e.to_string())?;
     let writer: Box<dyn std::io::Write> = if gzip {
-        Box::new(std::io::BufWriter::with_capacity(COPY_BUF,
-            flate2::write::GzEncoder::new(file, flate2::Compression::default())))
+        Box::new(std::io::BufWriter::with_capacity(
+            COPY_BUF,
+            flate2::write::GzEncoder::new(file, flate2::Compression::default()),
+        ))
     } else {
         Box::new(std::io::BufWriter::with_capacity(COPY_BUF, file))
     };
@@ -807,8 +843,14 @@ fn unique_path(outpath: &Path) -> std::path::PathBuf {
         return outpath.to_path_buf();
     }
     let parent = outpath.parent().unwrap_or(Path::new("."));
-    let stem = outpath.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let ext = outpath.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let stem = outpath
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = outpath
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
     for i in 2.. {
         let candidate = parent.join(format!("{stem} ({i}){ext}"));
         if !candidate.exists() {
@@ -837,12 +879,17 @@ fn count_files(entries: &[std::path::PathBuf]) -> usize {
 
 const COPY_BUF: usize = 1 << 20; // 1 MiB
 
-fn copy_with_big_buf(mut reader: impl std::io::Read, writer: &mut (impl std::io::Write + ?Sized)) -> std::io::Result<u64> {
+fn copy_with_big_buf(
+    mut reader: impl std::io::Read,
+    writer: &mut (impl std::io::Write + ?Sized),
+) -> std::io::Result<u64> {
     let mut buf = vec![0u8; COPY_BUF];
     let mut total = 0;
     loop {
         let n = reader.read(&mut buf)?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         writer.write_all(&buf[..n])?;
         total += n as u64;
     }
@@ -871,12 +918,10 @@ fn archive_progress_timer(
 
 /// File extensions that are already compressed — storing them raw saves CPU with zero size gain.
 const INCOMPRESSIBLE_EXTS: &[&str] = &[
-    "zip", "7z", "gz", "bz2", "xz", "zst", "tar", "rar", "lz", "lz4", "br",
-    "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv",
-    "jpg", "jpeg", "png", "webp", "gif", "heic", "avif", "bmp",
-    "mp3", "flac", "aac", "ogg", "opus", "wma", "m4a",
-    "pdf", "epub", "docx", "xlsx", "pptx", "odt", "ods", "odp",
-    "iso", "dmg", "deb", "rpm", "apk", "jar", "war",
+    "zip", "7z", "gz", "bz2", "xz", "zst", "tar", "rar", "lz", "lz4", "br", "mp4", "mkv", "avi",
+    "mov", "webm", "flv", "wmv", "jpg", "jpeg", "png", "webp", "gif", "heic", "avif", "bmp", "mp3",
+    "flac", "aac", "ogg", "opus", "wma", "m4a", "pdf", "epub", "docx", "xlsx", "pptx", "odt",
+    "ods", "odp", "iso", "dmg", "deb", "rpm", "apk", "jar", "war",
 ];
 
 fn is_incompressible(path: &Path) -> bool {
@@ -933,7 +978,9 @@ fn extract_zip_from_archive(
     let mut first_name = None;
     for i in 0..archive.len() {
         let read_options = zip::read::ZipReadOptions::new().password(pw_bytes);
-        let mut entry = archive.by_index_with_options(i, read_options).map_err(|e| e.to_string())?;
+        let mut entry = archive
+            .by_index_with_options(i, read_options)
+            .map_err(|e| e.to_string())?;
         let name = entry.name().trim_end_matches('/').to_owned();
         let outpath = resolver.resolve(dest_dir, &name)?;
         if first_name.is_none() {
@@ -958,7 +1005,12 @@ fn extract_zip_from_archive(
     Ok(first_name)
 }
 
-fn extract_tar(archive_path: &Path, dest_dir: &Path, gzip: bool, progress: &Arc<AtomicUsize>) -> Result<Option<String>, String> {
+fn extract_tar(
+    archive_path: &Path,
+    dest_dir: &Path,
+    gzip: bool,
+    progress: &Arc<AtomicUsize>,
+) -> Result<Option<String>, String> {
     let file = std::fs::File::open(archive_path).map_err(|e| e.to_string())?;
     let reader: Box<dyn std::io::Read> = if gzip {
         Box::new(flate2::read::GzDecoder::new(file))
@@ -995,18 +1047,24 @@ fn extract_tar(archive_path: &Path, dest_dir: &Path, gzip: bool, progress: &Arc<
     Ok(first_name)
 }
 
-fn compress_7z(archive_path: &Path, entries: &[std::path::PathBuf], password: Option<&str>, progress: &Arc<AtomicUsize>) -> Result<(), String> {
+fn compress_7z(
+    archive_path: &Path,
+    entries: &[std::path::PathBuf],
+    password: Option<&str>,
+    progress: &Arc<AtomicUsize>,
+) -> Result<(), String> {
     use sevenz_rust2::encoder_options::{AesEncoderOptions, EncoderOptions, Lzma2Options};
-    let mut writer = sevenz_rust2::ArchiveWriter::create(archive_path)
-        .map_err(|e| e.to_string())?;
-    let threads = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
-    let lzma2 = sevenz_rust2::EncoderConfiguration::new(sevenz_rust2::EncoderMethod::LZMA2)
-        .with_options(EncoderOptions::Lzma2(Lzma2Options::from_level_mt(6, threads, 1 << 26)));
+    let mut writer =
+        sevenz_rust2::ArchiveWriter::create(archive_path).map_err(|e| e.to_string())?;
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
+    let lzma2 =
+        sevenz_rust2::EncoderConfiguration::new(sevenz_rust2::EncoderMethod::LZMA2).with_options(
+            EncoderOptions::Lzma2(Lzma2Options::from_level_mt(6, threads, 1 << 26)),
+        );
     if let Some(pw) = password {
-        let methods = vec![
-            lzma2,
-            AesEncoderOptions::new(pw.into()).into(),
-        ];
+        let methods = vec![lzma2, AesEncoderOptions::new(pw.into()).into()];
         writer.set_content_methods(methods);
     } else {
         writer.set_content_methods(vec![lzma2]);

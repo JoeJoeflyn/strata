@@ -54,6 +54,7 @@ struct ColumnView {
     presentation: LoadPresentation,
     model: gtk::StringList,
     filtered_model: gtk::FilterListModel,
+    header_actions: gtk::Box,
     filter_entry: gtk::Entry,
     filter_button: gtk::ToggleButton,
     selection: gtk::MultiSelection,
@@ -235,6 +236,25 @@ pub(super) struct ViewState {
     pending_extract_retry: RefCell<Option<(FileEntry, Location)>>,
     pending_navigate: RefCell<Option<Location>>,
     browser: Rc<Browser>,
+}
+
+fn focus_header_action(actions: &gtk::Box, direction: gtk::DirectionType) -> bool {
+    let mut action = if direction == gtk::DirectionType::Left {
+        actions.last_child()
+    } else {
+        actions.first_child()
+    };
+    while let Some(candidate) = action {
+        action = if direction == gtk::DirectionType::Left {
+            candidate.prev_sibling()
+        } else {
+            candidate.next_sibling()
+        };
+        if candidate.is_visible() && candidate.grab_focus() {
+            return true;
+        }
+    }
+    false
 }
 
 #[derive(Clone)]
@@ -497,8 +517,118 @@ impl BrowserView {
         }
     }
 
+    pub fn first_column_has_focus(&self) -> bool {
+        self.view_mode() == BrowserMode::Columns && self.state.focused_column_depth() == Some(0)
+    }
+
+    pub fn focus_header_from_top_item(&self) -> bool {
+        if self.view_mode() != BrowserMode::Columns {
+            return false;
+        }
+        let Some((depth, position, _)) = self.state.browser.focused_item() else {
+            return false;
+        };
+        let columns = self.state.columns.borrow();
+        let Some(column) = columns.get(depth) else {
+            return false;
+        };
+        if filtered_position_for_source(column, position) != Some(0) {
+            return false;
+        }
+        let mut control = column.header_actions.first_child();
+        let focused = loop {
+            let Some(candidate) = control else {
+                break false;
+            };
+            control = candidate.next_sibling();
+            if candidate.is_visible() && candidate.grab_focus() {
+                break true;
+            }
+        };
+        if focused && let Some(window) = self.state.overlay.root().and_downcast::<gtk::Window>() {
+            window.set_focus_visible(true);
+        }
+        focused
+    }
+
+    pub fn header_actions_have_focus(&self) -> bool {
+        let focused = self.state.overlay.root().and_then(|root| root.focus());
+        self.state.columns.borrow().iter().any(|column| {
+            focused.as_ref().is_some_and(|focused| {
+                focused == column.header_actions.upcast_ref::<gtk::Widget>()
+                    || focused.is_ancestor(&column.header_actions)
+            })
+        })
+    }
+
+    pub fn move_header_focus(&self, direction: gtk::DirectionType) -> bool {
+        let focused = self.state.overlay.root().and_then(|root| root.focus());
+        let columns = self.state.columns.borrow();
+        let Some(index) = columns.iter().position(|column| {
+            focused.as_ref().is_some_and(|focused| {
+                focused == column.header_actions.upcast_ref::<gtk::Widget>()
+                    || focused.is_ancestor(&column.header_actions)
+            })
+        }) else {
+            return false;
+        };
+        if columns[index].header_actions.child_focus(direction) {
+            return true;
+        }
+        let adjacent = match direction {
+            gtk::DirectionType::Left => index.checked_sub(1),
+            gtk::DirectionType::Right => (index + 1 < columns.len()).then_some(index + 1),
+            _ => None,
+        };
+        let Some(column) = adjacent.and_then(|index| columns.get(index)) else {
+            return false;
+        };
+        let moved = focus_header_action(&column.header_actions, direction);
+        if moved && let Some(window) = self.state.overlay.root().and_downcast::<gtk::Window>() {
+            window.set_focus_visible(true);
+        }
+        moved
+    }
+
+    pub fn focus_items_from_header(&self) -> bool {
+        let focused = self.state.overlay.root().and_then(|root| root.focus());
+        self.state
+            .columns
+            .borrow()
+            .iter()
+            .find(|column| {
+                focused.as_ref().is_some_and(|focused| {
+                    focused == column.header_actions.upcast_ref::<gtk::Widget>()
+                        || focused.is_ancestor(&column.header_actions)
+                })
+            })
+            .is_some_and(|column| column.list.grab_focus())
+    }
+
     pub fn navigate_up(&self) {
-        self.state.browser.parent();
+        if self.view_mode() != BrowserMode::Columns {
+            self.state.browser.parent();
+            return;
+        }
+
+        match self
+            .state
+            .focused_column_depth()
+            .or_else(|| self.state.browser.active_depth())
+        {
+            Some(0) => {
+                if let Some(parent) = self
+                    .state
+                    .browser
+                    .location_at(0)
+                    .and_then(|location| location.parent())
+                {
+                    self.state.browser.navigate(parent);
+                }
+            }
+            Some(depth) => self.state.browser.close_column(depth),
+            None => {}
+        }
     }
 
     pub fn location_widget(&self) -> gtk::Widget {
@@ -663,6 +793,30 @@ impl BrowserView {
                             || focused.is_ancestor(&column.filter_entry)
                     })
             })
+    }
+
+    pub fn item_view_has_focus(&self) -> bool {
+        let focused = self.state.overlay.root().and_then(|root| root.focus());
+        self.state.mode_views.borrow().item_view_has_focus()
+            || self.state.columns.borrow().iter().any(|column| {
+                focused.as_ref().is_some_and(|focused| {
+                    focused == column.list.upcast_ref::<gtk::Widget>()
+                        || focused.is_ancestor(&column.list)
+                })
+            })
+    }
+
+    pub fn dismiss_empty_focused_filter(&self) -> bool {
+        let focused = self.state.overlay.root().and_then(|root| root.focus());
+        let empty = self.state.mode_views.borrow().empty_filter_has_focus()
+            || self.state.columns.borrow().iter().any(|column| {
+                column.filter_entry.text().is_empty()
+                    && focused.as_ref().is_some_and(|focused| {
+                        focused == column.filter_entry.upcast_ref::<gtk::Widget>()
+                            || focused.is_ancestor(&column.filter_entry)
+                    })
+            });
+        empty && self.dismiss_focused_filter()
     }
 
     pub fn dismiss_focused_filter(&self) -> bool {
@@ -1633,14 +1787,18 @@ impl ViewState {
         let cancel_layer = layer.clone();
         let cancel_overlay = window_overlay.clone();
         let cancel_root = blurred_root.clone();
+        let cancel_browser = self.browser.clone();
         cancel.connect_clicked(move |_| {
             dismiss_modal_layer(&cancel_layer, &cancel_overlay, cancel_root.as_ref());
+            cancel_browser.focus_active();
         });
         let close_layer = layer.clone();
         let close_overlay = window_overlay.clone();
         let close_root = blurred_root.clone();
+        let close_browser = self.browser.clone();
         close.connect_clicked(move |_| {
             dismiss_modal_layer(&close_layer, &close_overlay, close_root.as_ref());
+            close_browser.focus_active();
         });
         let empty_layer = layer.clone();
         let empty_overlay = window_overlay.clone();
@@ -1649,21 +1807,36 @@ impl ViewState {
         empty.connect_clicked(move |_| {
             dismiss_modal_layer(&empty_layer, &empty_overlay, empty_root.as_ref());
             browser.delete(summary.entries.clone(), true);
+            browser.focus_active();
         });
-        let escape = gtk::EventControllerKey::new();
+        let keys = gtk::EventControllerKey::new();
         let escape_layer = layer.clone();
+        let focused_layer = layer.clone();
         let escape_overlay = window_overlay;
         let escape_root = blurred_root;
-        escape.connect_key_pressed(move |_, key, _, _| {
+        let escape_browser = self.browser.clone();
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
             if key == gtk::gdk::Key::Escape {
                 dismiss_modal_layer(&escape_layer, &escape_overlay, escape_root.as_ref());
+                escape_browser.focus_active();
+                glib::Propagation::Stop
+            } else if !modifiers
+                .intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK)
+                && let Some(direction) = vim_focus_direction(key)
+            {
+                focused_layer.child_focus(direction);
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
             }
         });
-        layer.add_controller(escape);
-        cancel.grab_focus();
+        layer.add_controller(keys);
+        glib::idle_add_local_once(move || {
+            cancel.grab_focus();
+            if let Some(window) = cancel.root().and_downcast::<gtk::Window>() {
+                window.set_focus_visible(true);
+            }
+        });
     }
 
     fn show_delete_confirmation(self: &Rc<Self>, entries: Vec<FileEntry>, permanent: bool) {
@@ -1798,18 +1971,22 @@ impl ViewState {
         let cancelled_layer = layer.clone();
         let cancelled_overlay = window_overlay.clone();
         let cancelled_root = blurred_root.clone();
+        let cancelled_browser = self.browser.clone();
         cancel.connect_clicked(move |_| {
             dismiss_modal_layer(
                 &cancelled_layer,
                 &cancelled_overlay,
                 cancelled_root.as_ref(),
             );
+            cancelled_browser.focus_active();
         });
         let closed_layer = layer.clone();
         let closed_overlay = window_overlay.clone();
         let closed_root = blurred_root.clone();
+        let closed_browser = self.browser.clone();
         close.connect_clicked(move |_| {
             dismiss_modal_layer(&closed_layer, &closed_overlay, closed_root.as_ref());
+            closed_browser.focus_active();
         });
         let confirmed_layer = layer.clone();
         let confirmed_overlay = window_overlay.clone();
@@ -1822,25 +1999,45 @@ impl ViewState {
                 confirmed_root.as_ref(),
             );
             browser.delete(entries.clone(), permanent);
+            browser.focus_active();
         });
-        let escape = gtk::EventControllerKey::new();
+        let keys = gtk::EventControllerKey::new();
         let escaped_layer = layer.clone();
         let escaped_overlay = window_overlay;
         let escaped_root = blurred_root;
-        escape.connect_key_pressed(move |_, key, _, _| {
+        let escaped_browser = self.browser.clone();
+        let focused_cancel = cancel.clone();
+        let focused_confirm = confirm.clone();
+        keys.connect_key_pressed(move |_, key, _, modifiers| {
             if key == gtk::gdk::Key::Escape {
                 dismiss_modal_layer(&escaped_layer, &escaped_overlay, escaped_root.as_ref());
+                escaped_browser.focus_active();
+                glib::Propagation::Stop
+            } else if !modifiers
+                .intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK)
+            {
+                match delete_confirmation_focus_target(key) {
+                    Some(DeleteConfirmationFocus::Cancel) => focused_cancel.grab_focus(),
+                    Some(DeleteConfirmationFocus::Confirm) => focused_confirm.grab_focus(),
+                    None => return glib::Propagation::Proceed,
+                };
                 glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
             }
         });
-        layer.add_controller(escape);
-        if permanent {
-            cancel.grab_focus();
+        layer.add_controller(keys);
+        let initial_focus = if permanent {
+            cancel.clone()
         } else {
-            confirm.grab_focus();
-        }
+            confirm.clone()
+        };
+        glib::idle_add_local_once(move || {
+            initial_focus.grab_focus();
+            if let Some(window) = initial_focus.root().and_downcast::<gtk::Window>() {
+                window.set_focus_visible(true);
+            }
+        });
     }
 
     fn show_folder_properties(self: &Rc<Self>, location: &Location) {
@@ -3223,6 +3420,7 @@ impl ViewState {
                 depth,
                 positions,
                 focused,
+                take_focus,
             } => {
                 if let Some(column) = self.columns.borrow().get(depth) {
                     let filtered_positions: Vec<_> = positions
@@ -3242,7 +3440,7 @@ impl ViewState {
                                 .list
                                 .scroll_to(focused, gtk::ListScrollFlags::FOCUS, None);
                         }
-                        if self.mode_views.borrow().mode() == BrowserMode::Columns {
+                        if take_focus && self.mode_views.borrow().mode() == BrowserMode::Columns {
                             column.list.grab_focus();
                         }
                     }
@@ -4209,6 +4407,7 @@ impl ViewState {
             presentation,
             model,
             filtered_model,
+            header_actions,
             filter_entry,
             filter_button,
             selection,
@@ -5728,6 +5927,32 @@ pub(super) fn column_sort_menu(browser: &Rc<Browser>, depth: usize) -> gtk::Menu
         .position(gtk::PositionType::Bottom)
         .build();
     popover.add_css_class("column-popover");
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let dismissed_popover = popover.clone();
+    keys.connect_key_pressed(move |_, key, _, modifiers| {
+        if modifiers
+            .intersects(gtk::gdk::ModifierType::CONTROL_MASK | gtk::gdk::ModifierType::ALT_MASK)
+        {
+            return glib::Propagation::Proceed;
+        }
+        if key == gtk::gdk::Key::BackSpace {
+            dismissed_popover.popdown();
+            glib::Propagation::Stop
+        } else if let Some(direction) = match key {
+            gtk::gdk::Key::h => Some(gtk::DirectionType::Left),
+            gtk::gdk::Key::j => Some(gtk::DirectionType::Down),
+            gtk::gdk::Key::k => Some(gtk::DirectionType::Up),
+            gtk::gdk::Key::l => Some(gtk::DirectionType::Right),
+            _ => None,
+        } {
+            dismissed_popover.child_focus(direction);
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    popover.add_controller(keys);
     let weak_browser = Rc::downgrade(browser);
     let checks = selected_checks.clone();
     let folders_enabled_for_map = folders_enabled.clone();
@@ -6125,6 +6350,30 @@ fn entry_kind_summary(entries: &[FileEntry]) -> String {
         (0, 1) => "1 folder".to_owned(),
         (0, directories) => format!("{directories} folders"),
         _ => item_count_label(entries.len()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DeleteConfirmationFocus {
+    Cancel,
+    Confirm,
+}
+
+fn delete_confirmation_focus_target(key: gtk::gdk::Key) -> Option<DeleteConfirmationFocus> {
+    match key {
+        gtk::gdk::Key::Left | gtk::gdk::Key::h => Some(DeleteConfirmationFocus::Cancel),
+        gtk::gdk::Key::Right | gtk::gdk::Key::l => Some(DeleteConfirmationFocus::Confirm),
+        _ => None,
+    }
+}
+
+fn vim_focus_direction(key: gtk::gdk::Key) -> Option<gtk::DirectionType> {
+    match key {
+        gtk::gdk::Key::h => Some(gtk::DirectionType::Left),
+        gtk::gdk::Key::j => Some(gtk::DirectionType::Down),
+        gtk::gdk::Key::k => Some(gtk::DirectionType::Up),
+        gtk::gdk::Key::l => Some(gtk::DirectionType::Right),
+        _ => None,
     }
 }
 

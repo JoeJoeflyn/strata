@@ -3985,7 +3985,7 @@ impl ViewState {
         let filter_button = gtk::ToggleButton::builder()
             .tooltip_text("Filter this pane (Ctrl+F)")
             .build();
-        filter_button.set_child(Some(&crate::assets::text_icon(
+        filter_button.set_child(Some(&crate::assets::primary_icon(
             crate::assets::icons::FUNNEL,
             16,
         )));
@@ -4005,7 +4005,10 @@ impl ViewState {
             let close = gtk::Button::builder()
                 .tooltip_text("Close this pane")
                 .build();
-            close.set_child(Some(&crate::assets::text_icon(crate::assets::icons::X, 16)));
+            close.set_child(Some(&crate::assets::primary_icon(
+                crate::assets::icons::X,
+                16,
+            )));
             close.add_css_class("column-header-action");
             let weak_browser = Rc::downgrade(&self.browser);
             close.connect_clicked(move |_| {
@@ -5009,6 +5012,7 @@ fn peek_label_factory(entries: Rc<RefCell<Vec<FileEntry>>>) -> gtk::SignalListIt
             return;
         };
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.add_css_class("file-row");
         let icon = gtk::Image::new();
         icon.add_css_class("file-icon");
         icon.set_pixel_size(17);
@@ -6488,7 +6492,7 @@ fn retain_untransferred(cut: &mut Vec<Location>, transferred: &[Location]) {
 }
 
 fn item_context_option(icon: &str, label: &str, accelerator: &str) -> gtk::Button {
-    item_context_option_with_icon(crate::assets::text_icon(icon, 15), label, accelerator)
+    item_context_option_with_icon(crate::assets::primary_icon(icon, 15), label, accelerator)
 }
 
 fn item_context_danger_option(icon: &str, label: &str, accelerator: &str) -> gtk::Button {
@@ -6634,7 +6638,7 @@ pub(super) fn column_sort_menu(browser: &Rc<Browser>, depth: usize) -> gtk::Menu
         .tooltip_text("Choose sort field")
         .popover(&popover)
         .build();
-    button.set_child(Some(&crate::assets::text_icon(
+    button.set_child(Some(&crate::assets::primary_icon(
         crate::assets::icons::SETTINGS_2,
         16,
     )));
@@ -6648,7 +6652,7 @@ pub(super) fn column_sort_direction_toggle(browser: &Rc<Browser>, depth: usize) 
         .unwrap_or_default()
         .sort_direction;
     let button = gtk::Button::new();
-    let icon = crate::assets::text_icon(crate::assets::icons::ARROW_UP_NARROW_WIDE, 16);
+    let icon = crate::assets::primary_icon(crate::assets::icons::ARROW_UP_NARROW_WIDE, 16);
     button.set_child(Some(&icon));
     button.add_css_class("column-header-action");
     sync_sort_direction_toggle(&button, &icon, direction);
@@ -6685,7 +6689,7 @@ pub(super) fn column_sort_direction_toggle(browser: &Rc<Browser>, depth: usize) 
 
 fn sync_sort_direction_toggle(button: &gtk::Button, icon: &gtk::Image, direction: SortDirection) {
     let descending = direction == SortDirection::Descending;
-    crate::assets::set_text_icon(
+    crate::assets::set_primary_icon(
         icon,
         if descending {
             crate::assets::icons::ARROW_DOWN_WIDE_NARROW
@@ -6711,7 +6715,7 @@ pub(super) fn empty_trash_button(browser: &Rc<Browser>) -> gtk::Button {
         .tooltip_text("Empty Trash")
         .visible(false)
         .build();
-    button.set_child(Some(&crate::assets::text_icon(
+    button.set_child(Some(&crate::assets::primary_icon(
         crate::assets::icons::TRASH,
         16,
     )));

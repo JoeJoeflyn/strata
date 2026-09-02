@@ -414,7 +414,6 @@ impl ThemeManager {
     fn apply_tokens(&self, tokens: &ThemeTokens) {
         self.provider.load_from_string(&tokens_css(tokens));
         crate::assets::set_primary_icon_color(&tokens.accent);
-        crate::assets::set_text_icon_color(&tokens.text);
         crate::assets::set_danger_icon_color(&tokens.danger);
         install_source_style_scheme(tokens);
     }

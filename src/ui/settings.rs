@@ -215,8 +215,7 @@ pub fn build_layer(
     stack.add_named(&about_page(), Some("about"));
     page.append(&stack);
 
-    let nav_buttons: Rc<RefCell<Vec<(gtk::Button, gtk::Image, gtk::Image)>>> =
-        Rc::new(RefCell::new(Vec::new()));
+    let nav_buttons: Rc<RefCell<Vec<gtk::Button>>> = Rc::new(RefCell::new(Vec::new()));
     let mut navigation_labels = Vec::new();
     let mut navigation_contents = Vec::new();
     for (label, icon, name) in [
@@ -227,30 +226,24 @@ pub fn build_layer(
         ("About", icons::INFO, "about"),
     ] {
         let active = name == "general";
-        let (button, navigation_label, navigation_content, primary_icon, text_icon) =
-            navigation_button(icon, label, active);
+        let (button, navigation_label, navigation_content) = navigation_button(icon, label);
         navigation_labels.push(navigation_label);
         navigation_contents.push(navigation_content);
         if active {
             button.add_css_class("settings-nav-active");
         }
-        nav_buttons
-            .borrow_mut()
-            .push((button.clone(), primary_icon, text_icon));
+        nav_buttons.borrow_mut().push(button.clone());
         let buttons = nav_buttons.clone();
         let stack = stack.clone();
         let title = title.clone();
         let page_title = label.to_owned();
         button.connect_clicked(move |clicked| {
-            for (candidate, primary_icon, text_icon) in buttons.borrow().iter() {
-                let active = candidate == clicked;
-                if active {
+            for candidate in buttons.borrow().iter() {
+                if candidate == clicked {
                     candidate.add_css_class("settings-nav-active");
                 } else {
                     candidate.remove_css_class("settings-nav-active");
                 }
-                primary_icon.set_visible(active);
-                text_icon.set_visible(!active);
             }
             stack.set_visible_child_name(name);
             title.set_text(&page_title);
@@ -1254,7 +1247,7 @@ fn theme_page(manager: Rc<ThemeManager>) -> (gtk::Widget, Vec<(gtk::FlowBox, u32
     });
     theme_search.add_controller(search_keys);
     let clear_search = gtk::Button::builder()
-        .child(&crate::assets::text_icon(icons::X, 15))
+        .child(&crate::assets::primary_icon(icons::X, 15))
         .tooltip_text("Clear theme search")
         .halign(gtk::Align::End)
         .valign(gtk::Align::Center)
@@ -1692,27 +1685,19 @@ impl ColorField {
     }
 }
 
-fn navigation_button(
-    icon: &str,
-    label: &str,
-    active: bool,
-) -> (gtk::Button, gtk::Label, gtk::Box, gtk::Image, gtk::Image) {
+fn navigation_button(icon: &str, label: &str) -> (gtk::Button, gtk::Label, gtk::Box) {
     let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    let primary_icon = crate::assets::primary_icon(icon, 18);
-    primary_icon.set_visible(active);
-    let text_icon = crate::assets::text_icon(icon, 18);
-    text_icon.set_visible(!active);
+    let icon_image = crate::assets::primary_icon(icon, 18);
     let text = gtk::Label::new(Some(label));
     text.set_xalign(0.0);
-    content.append(&primary_icon);
-    content.append(&text_icon);
+    content.append(&icon_image);
     content.append(&text);
     let button = gtk::Button::builder()
         .child(&content)
         .tooltip_text(label)
         .build();
     button.set_has_frame(false);
-    (button, text, content, primary_icon, text_icon)
+    (button, text, content)
 }
 
 fn scrollable_page(content: &gtk::Box, class: Option<&str>) -> gtk::Widget {

@@ -1799,7 +1799,7 @@ fn build_explorer_pane(
     let view = gtk::ListView::new(Some(selection.clone()), Some(factory));
     view.add_css_class("explorer-list");
     view.set_enable_rubberband(false);
-    view.set_single_click_activate(false);
+    view.set_single_click_activate(true);
     let weak_browser = Rc::downgrade(&browser);
     let source_for_activation = model.clone();
     let view_model_for_activation = view_model_object.clone();
@@ -1811,7 +1811,7 @@ fn build_explorer_pane(
                 position,
             )
         {
-            browser.activate_in_place(depth, position);
+            browser.activate(depth, position);
         }
     });
     connect_selection(

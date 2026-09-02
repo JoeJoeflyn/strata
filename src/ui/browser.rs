@@ -6546,6 +6546,13 @@ pub(super) fn column_sort_menu(browser: &Rc<Browser>, depth: usize) -> gtk::Menu
     let preferences = browser.column_preferences(depth).unwrap_or_default();
     let selected_checks: Rc<RefCell<Vec<(SortKey, gtk::Image)>>> =
         Rc::new(RefCell::new(Vec::new()));
+    let popover = gtk::Popover::builder()
+        .has_arrow(false)
+        .halign(gtk::Align::End)
+        .position(gtk::PositionType::Bottom)
+        .build();
+    popover.add_css_class("column-popover");
+    let popover_weak = popover.downgrade();
     for (label, key) in [
         ("Name", SortKey::Name),
         ("Size", SortKey::Size),
@@ -6556,12 +6563,16 @@ pub(super) fn column_sort_menu(browser: &Rc<Browser>, depth: usize) -> gtk::Menu
         selected_checks.borrow_mut().push((key, check));
         let checks = selected_checks.clone();
         let weak_browser = Rc::downgrade(browser);
+        let popover_weak = popover_weak.clone();
         option.connect_clicked(move |_| {
             for (check_key, check) in checks.borrow().iter() {
                 check.set_visible(*check_key == key);
             }
             if let Some(browser) = weak_browser.upgrade() {
                 browser.set_sort_key(depth, key);
+            }
+            if let Some(popover) = popover_weak.upgrade() {
+                popover.popdown();
             }
         });
         content.append(&option);
@@ -6574,6 +6585,7 @@ pub(super) fn column_sort_menu(browser: &Rc<Browser>, depth: usize) -> gtk::Menu
     let weak_browser = Rc::downgrade(browser);
     let folders_enabled_for_click = folders_enabled.clone();
     let folders_check_for_click = folders_check.clone();
+    let popover_weak = popover_weak.clone();
     folders_first.connect_clicked(move |_| {
         let enabled = !folders_enabled_for_click.get();
         folders_enabled_for_click.set(enabled);
@@ -6581,16 +6593,13 @@ pub(super) fn column_sort_menu(browser: &Rc<Browser>, depth: usize) -> gtk::Menu
         if let Some(browser) = weak_browser.upgrade() {
             browser.set_folders_first(depth, enabled);
         }
+        if let Some(popover) = popover_weak.upgrade() {
+            popover.popdown();
+        }
     });
     content.append(&folders_first);
 
-    let popover = gtk::Popover::builder()
-        .child(&content)
-        .has_arrow(false)
-        .halign(gtk::Align::End)
-        .position(gtk::PositionType::Bottom)
-        .build();
-    popover.add_css_class("column-popover");
+    popover.set_child(Some(&content));
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let dismissed_popover = popover.clone();

@@ -73,14 +73,12 @@ fn transfer_is_noop(source: &gio::File, destination: &gio::File, target: &gio::F
 
 fn parse_copy_suffix(stem: &OsStr) -> (&OsStr, Option<u64>) {
     let bytes = stem.as_bytes();
-    if let Some(base) = bytes.strip_suffix(b" copy") {
-        return (OsStr::from_bytes(base), Some(1));
-    }
-    if let Some(separator) = bytes
-        .windows(b" copy ".len())
-        .rposition(|window| window == b" copy ")
+    if let Some(without_closing_parenthesis) = bytes.strip_suffix(b")")
+        && let Some(separator) = without_closing_parenthesis
+            .windows(b" (".len())
+            .rposition(|window| window == b" (")
     {
-        let suffix = &bytes[separator + b" copy ".len()..];
+        let suffix = &without_closing_parenthesis[separator + b" (".len()..];
         if !suffix.is_empty()
             && suffix[0] != b'0'
             && suffix.iter().all(u8::is_ascii_digit)
@@ -100,11 +98,9 @@ fn duplicate_candidate_name(
     copy_number: u64,
 ) -> OsString {
     let mut candidate = base_stem.as_bytes().to_vec();
-    candidate.extend_from_slice(b" copy");
-    if copy_number > 1 {
-        candidate.push(b' ');
-        candidate.extend_from_slice(copy_number.to_string().as_bytes());
-    }
+    candidate.extend_from_slice(b" (");
+    candidate.extend_from_slice(copy_number.to_string().as_bytes());
+    candidate.push(b')');
     if let Some(extension) = extension {
         candidate.push(b'.');
         candidate.extend_from_slice(extension.as_bytes());

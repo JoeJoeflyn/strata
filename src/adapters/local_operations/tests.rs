@@ -1407,58 +1407,54 @@ fn copy_suffix_parsing_and_candidate_naming() {
         (OsStr::new("name"), None)
     );
     assert_eq!(
-        parse_copy_suffix(OsStr::new("name copy")),
+        parse_copy_suffix(OsStr::new("name (1)")),
         (OsStr::new("name"), Some(1))
     );
     assert_eq!(
-        parse_copy_suffix(OsStr::new("name copy 2")),
+        parse_copy_suffix(OsStr::new("name (2)")),
         (OsStr::new("name"), Some(2))
     );
     assert_eq!(
-        parse_copy_suffix(OsStr::new("name copy 42")),
+        parse_copy_suffix(OsStr::new("name (42)")),
         (OsStr::new("name"), Some(42))
     );
     assert_eq!(
-        parse_copy_suffix(OsStr::new("name copy foo")),
-        (OsStr::new("name copy foo"), None)
+        parse_copy_suffix(OsStr::new("name (foo)")),
+        (OsStr::new("name (foo)"), None)
     );
     assert_eq!(
-        parse_copy_suffix(OsStr::new("name copy 0")),
-        (OsStr::new("name copy 0"), None)
+        parse_copy_suffix(OsStr::new("name (0)")),
+        (OsStr::new("name (0)"), None)
     );
     assert_eq!(
-        parse_copy_suffix(OsStr::new("copy")),
-        (OsStr::new("copy"), None)
+        parse_copy_suffix(OsStr::new("name (2")),
+        (OsStr::new("name (2"), None)
     );
     assert_eq!(
-        parse_copy_suffix(OsStr::new("copy 2")),
-        (OsStr::new("copy 2"), None)
-    );
-    assert_eq!(
-        parse_copy_suffix(OsStr::new("name copy 18446744073709551615")),
-        (OsStr::new("name copy 18446744073709551615"), None)
+        parse_copy_suffix(OsStr::new("name (18446744073709551615)")),
+        (OsStr::new("name (18446744073709551615)"), None)
     );
 
     assert_eq!(
         duplicate_candidate_name(OsStr::new("name"), Some(OsStr::new("ext")), 1),
-        OsString::from("name copy.ext")
+        OsString::from("name (1).ext")
     );
     assert_eq!(
         duplicate_candidate_name(OsStr::new("name"), Some(OsStr::new("ext")), 2),
-        OsString::from("name copy 2.ext")
+        OsString::from("name (2).ext")
     );
     assert_eq!(
         duplicate_candidate_name(OsStr::new("name"), None, 1),
-        OsString::from("name copy")
+        OsString::from("name (1)")
     );
     assert_eq!(
         duplicate_candidate_name(OsStr::new("name"), None, 2),
-        OsString::from("name copy 2")
+        OsString::from("name (2)")
     );
 }
 
 #[test]
-fn duplicating_a_file_generates_name_copy_ext() -> Result<(), Box<dyn Error>> {
+fn duplicating_a_file_generates_numbered_name() -> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
         .map_err(|error| error.to_string())?;
@@ -1497,7 +1493,7 @@ fn duplicating_a_file_generates_name_copy_ext() -> Result<(), Box<dyn Error>> {
     ));
     assert!(source.exists());
     assert_eq!(fs::read(&source)?, b"original-content");
-    let duplicate = destination.join("photo copy.jpg");
+    let duplicate = destination.join("photo (1).jpg");
     assert!(duplicate.exists());
     assert_eq!(fs::read(&duplicate)?, b"original-content");
     Ok(())
@@ -1542,20 +1538,20 @@ fn duplicating_a_file_preserves_non_utf8_name_bytes() -> Result<(), Box<dyn Erro
         events.borrow().last(),
         Some(OperationEvent::Pasted { .. })
     ));
-    let duplicate_name = OsString::from_vec(b"photo-\xff copy.jpg".to_vec());
+    let duplicate_name = OsString::from_vec(b"photo-\xff (1).jpg".to_vec());
     let duplicate = destination.join(duplicate_name);
     assert_eq!(fs::read(duplicate)?, b"original-content");
     Ok(())
 }
 
 #[test]
-fn duplicating_an_existing_name_copy_ext_generates_name_copy_2_ext() -> Result<(), Box<dyn Error>> {
+fn duplicating_an_existing_numbered_name_advances_its_index() -> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
         .map_err(|error| error.to_string())?;
     let root = tempfile::tempdir()?;
     let destination = root.path().to_path_buf();
-    let source = destination.join("photo copy.jpg");
+    let source = destination.join("photo (1).jpg");
     fs::write(&source, b"copy-content")?;
 
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -1588,14 +1584,15 @@ fn duplicating_an_existing_name_copy_ext_generates_name_copy_2_ext() -> Result<(
     ));
     assert!(source.exists());
     assert_eq!(fs::read(&source)?, b"copy-content");
-    let duplicate = destination.join("photo copy 2.jpg");
+    let duplicate = destination.join("photo (2).jpg");
     assert!(duplicate.exists());
     assert_eq!(fs::read(&duplicate)?, b"copy-content");
     Ok(())
 }
 
 #[test]
-fn duplicating_file_with_existing_copy_advances_to_next_copy_index() -> Result<(), Box<dyn Error>> {
+fn duplicating_file_with_existing_numbered_name_advances_to_next_index()
+-> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
         .map_err(|error| error.to_string())?;
@@ -1603,7 +1600,7 @@ fn duplicating_file_with_existing_copy_advances_to_next_copy_index() -> Result<(
     let destination = root.path().to_path_buf();
     let source = destination.join("photo.jpg");
     fs::write(&source, b"original")?;
-    fs::write(destination.join("photo copy.jpg"), b"first copy")?;
+    fs::write(destination.join("photo (1).jpg"), b"first copy")?;
 
     let events = Rc::new(RefCell::new(Vec::new()));
     let emitted = events.clone();
@@ -1633,13 +1630,13 @@ fn duplicating_file_with_existing_copy_advances_to_next_copy_index() -> Result<(
         events.borrow().last(),
         Some(OperationEvent::Pasted { .. })
     ));
-    assert_eq!(fs::read(destination.join("photo copy 2.jpg"))?, b"original");
-    assert_eq!(fs::read(destination.join("photo copy.jpg"))?, b"first copy");
+    assert_eq!(fs::read(destination.join("photo (2).jpg"))?, b"original");
+    assert_eq!(fs::read(destination.join("photo (1).jpg"))?, b"first copy");
     Ok(())
 }
 
 #[test]
-fn duplicating_a_directory_generates_name_copy() -> Result<(), Box<dyn Error>> {
+fn duplicating_a_directory_generates_numbered_name() -> Result<(), Box<dyn Error>> {
     let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
         .lock()
         .map_err(|error| error.to_string())?;
@@ -1678,7 +1675,7 @@ fn duplicating_a_directory_generates_name_copy() -> Result<(), Box<dyn Error>> {
         Some(OperationEvent::Pasted { .. })
     ));
     assert!(source.is_dir());
-    let duplicate = destination.join("documents copy");
+    let duplicate = destination.join("documents (1)");
     assert!(duplicate.is_dir());
     assert_eq!(fs::read(duplicate.join("notes.txt"))?, b"nested-file");
     Ok(())
@@ -1732,7 +1729,7 @@ fn cutting_in_the_same_folder_remains_a_noop() -> Result<(), Box<dyn Error>> {
     ));
     assert!(file.exists());
     assert!(directory.is_dir());
-    assert!(!destination.join("document copy.txt").exists());
-    assert!(!destination.join("folder copy").exists());
+    assert!(!destination.join("document (1).txt").exists());
+    assert!(!destination.join("folder (1)").exists());
     Ok(())
 }

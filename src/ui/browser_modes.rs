@@ -1425,6 +1425,13 @@ fn build_grid_view(
         };
         let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
         card.add_css_class("grid-card");
+        card.add_css_class("file-appear");
+        let weak_card = card.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(card) = weak_card.upgrade() {
+                card.remove_css_class("file-appear");
+            }
+        });
         card.set_halign(gtk::Align::Center);
         card.set_valign(gtk::Align::Center);
         let centered = gtk::CenterBox::new();
@@ -2139,6 +2146,13 @@ fn build_explorer_pane(
         };
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         row.add_css_class("explorer-row");
+        row.add_css_class("file-appear");
+        let weak_row = row.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(row) = weak_row.upgrade() {
+                row.remove_css_class("file-appear");
+            }
+        });
         let name_cell = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         name_cell.add_css_class("explorer-name-cell");
         let icon = gtk::Image::new();

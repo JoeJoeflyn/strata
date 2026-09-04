@@ -4735,11 +4735,13 @@ impl ViewState {
                 else {
                     return false;
                 };
+                let Some(sources) = locations_from_file_list_value(value) else {
+                    return false;
+                };
+                let move_sources = file_drop_action(target) == gtk::gdk::DragAction::MOVE;
                 slide_in_down(&dropped_row);
-                let target = target.clone();
-                let value = value.clone();
                 glib::timeout_add_local_once(Duration::from_millis(300), move || {
-                    transfer_dropped_files(&state, &target, &value, destination);
+                    state.start_transfer(destination, sources, move_sources);
                 });
                 true
             });

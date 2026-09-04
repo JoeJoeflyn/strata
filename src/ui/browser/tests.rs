@@ -508,6 +508,10 @@ fn transfer_collisions_detect_existing_destination_items() -> Result<(), Box<dyn
         &Location::local(&source),
         &Location::local(&destination)
     ));
+    assert!(!transfer_has_collision(
+        &Location::local(&source),
+        &Location::local(&source_dir)
+    ));
     std::fs::write(destination.join("photo.jpg"), b"old")?;
     assert!(transfer_has_collision(
         &Location::local(&source),

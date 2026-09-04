@@ -884,6 +884,22 @@ impl BrowserView {
         true
     }
 
+    pub fn duplicate_selection(&self) -> bool {
+        if !self.copy_selection() {
+            return false;
+        }
+        let depth = paste_destination_depth(
+            self.view_mode(),
+            self.state.hovered_column.get(),
+            self.state.browser.active_depth(),
+            self.state.columns.borrow().len(),
+        );
+        if let Some(location) = depth.and_then(|depth| self.state.browser.location_at(depth)) {
+            self.state.paste_into(location);
+        }
+        true
+    }
+
     pub fn cut_selection(&self) -> bool {
         self.state.sync_mode_selection();
         let entries = self.state.browser.selected_entries();

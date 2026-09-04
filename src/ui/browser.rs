@@ -631,11 +631,18 @@ impl BrowserView {
         if mode == previous {
             return;
         }
-        self.state.mode_views.borrow_mut().set_mode(mode);
-        if mode == BrowserMode::Columns && previous != BrowserMode::Columns {
+        self.state.mode_views.borrow_mut().prepare_mode(mode);
+        if mode == BrowserMode::Columns {
             self.state.rebuild_columns();
-        } else if mode != BrowserMode::Columns {
-            self.state.truncate(0);
+        }
+        self.state.mode_views.borrow().show_mode(mode);
+        match previous {
+            BrowserMode::Columns => self.state.truncate(0),
+            BrowserMode::Grid | BrowserMode::Explorer => self
+                .state
+                .mode_views
+                .borrow_mut()
+                .clear_inactive_mode(previous),
         }
     }
 

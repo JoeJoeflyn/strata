@@ -551,14 +551,12 @@ impl ModeViews {
     }
 
     pub fn set_mode(&mut self, mode: BrowserMode) {
+        if self.mode == mode {
+            return;
+        }
         self.cancel_new_entry();
         self.cancel_rename();
         self.mode = mode;
-        self.stack.set_visible_child_name(match mode {
-            BrowserMode::Columns => "columns",
-            BrowserMode::Grid => "grid",
-            BrowserMode::Explorer => "explorer",
-        });
         match mode {
             BrowserMode::Columns => {
                 self.clear_grid();
@@ -573,6 +571,11 @@ impl ModeViews {
                 self.rebuild_explorer();
             }
         }
+        self.stack.set_visible_child_name(match mode {
+            BrowserMode::Columns => "columns",
+            BrowserMode::Grid => "grid",
+            BrowserMode::Explorer => "explorer",
+        });
         if let Some(depth) = self.browser.active_depth() {
             self.focus_visible_pane(depth);
         }

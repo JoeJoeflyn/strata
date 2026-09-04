@@ -628,6 +628,9 @@ impl BrowserView {
 
     pub fn set_view_mode(&self, mode: BrowserMode) {
         let previous = self.state.mode_views.borrow().mode();
+        if mode == previous {
+            return;
+        }
         self.state.mode_views.borrow_mut().set_mode(mode);
         if mode == BrowserMode::Columns && previous != BrowserMode::Columns {
             self.state.rebuild_columns();

@@ -4,10 +4,10 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashSet,
     error::Error,
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     fs,
     io::{Cursor, Write},
-    os::unix::fs::PermissionsExt,
+    os::unix::{ffi::OsStringExt, fs::PermissionsExt},
     path::Path,
     rc::Rc,
     sync::{
@@ -1402,25 +1402,59 @@ fn cancelling_restore_before_io_reports_every_item_as_unattempted() -> Result<()
 
 #[test]
 fn copy_suffix_parsing_and_candidate_naming() {
-    assert_eq!(parse_copy_suffix("name"), ("name", None));
-    assert_eq!(parse_copy_suffix("name copy"), ("name", Some(1)));
-    assert_eq!(parse_copy_suffix("name copy 2"), ("name", Some(2)));
-    assert_eq!(parse_copy_suffix("name copy 42"), ("name", Some(42)));
-    assert_eq!(parse_copy_suffix("name copy foo"), ("name copy foo", None));
-    assert_eq!(parse_copy_suffix("name copy 0"), ("name copy 0", None));
-    assert_eq!(parse_copy_suffix("copy"), ("copy", None));
-    assert_eq!(parse_copy_suffix("copy 2"), ("copy 2", None));
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("name")),
+        (OsStr::new("name"), None)
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("name copy")),
+        (OsStr::new("name"), Some(1))
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("name copy 2")),
+        (OsStr::new("name"), Some(2))
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("name copy 42")),
+        (OsStr::new("name"), Some(42))
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("name copy foo")),
+        (OsStr::new("name copy foo"), None)
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("name copy 0")),
+        (OsStr::new("name copy 0"), None)
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("copy")),
+        (OsStr::new("copy"), None)
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("copy 2")),
+        (OsStr::new("copy 2"), None)
+    );
+    assert_eq!(
+        parse_copy_suffix(OsStr::new("name copy 18446744073709551615")),
+        (OsStr::new("name copy 18446744073709551615"), None)
+    );
 
     assert_eq!(
-        duplicate_candidate_name("name", Some("ext"), 1),
-        "name copy.ext"
+        duplicate_candidate_name(OsStr::new("name"), Some(OsStr::new("ext")), 1),
+        OsString::from("name copy.ext")
     );
     assert_eq!(
-        duplicate_candidate_name("name", Some("ext"), 2),
-        "name copy 2.ext"
+        duplicate_candidate_name(OsStr::new("name"), Some(OsStr::new("ext")), 2),
+        OsString::from("name copy 2.ext")
     );
-    assert_eq!(duplicate_candidate_name("name", None, 1), "name copy");
-    assert_eq!(duplicate_candidate_name("name", None, 2), "name copy 2");
+    assert_eq!(
+        duplicate_candidate_name(OsStr::new("name"), None, 1),
+        OsString::from("name copy")
+    );
+    assert_eq!(
+        duplicate_candidate_name(OsStr::new("name"), None, 2),
+        OsString::from("name copy 2")
+    );
 }
 
 #[test]
@@ -1466,6 +1500,51 @@ fn duplicating_a_file_generates_name_copy_ext() -> Result<(), Box<dyn Error>> {
     let duplicate = destination.join("photo copy.jpg");
     assert!(duplicate.exists());
     assert_eq!(fs::read(&duplicate)?, b"original-content");
+    Ok(())
+}
+
+#[test]
+fn duplicating_a_file_preserves_non_utf8_name_bytes() -> Result<(), Box<dyn Error>> {
+    let _serial = ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let root = tempfile::tempdir()?;
+    let destination = root.path().to_path_buf();
+    let source_name = OsString::from_vec(b"photo-\xff.jpg".to_vec());
+    let source = destination.join(&source_name);
+    fs::write(&source, b"original-content")?;
+
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let emitted = events.clone();
+    let _operation = LocalOperationProvider.paste(
+        PasteRequest {
+            id: OperationRequestId(15),
+            destination: Location::local(&destination),
+            items: vec![PasteItem {
+                source: Location::local(&source),
+                conflict: TransferConflict::FailIfExists,
+            }],
+            move_sources: false,
+        },
+        Rc::new(move |event| emitted.borrow_mut().push(event)),
+    );
+
+    while !events.borrow().iter().any(|event| {
+        matches!(
+            event,
+            OperationEvent::Pasted { .. } | OperationEvent::TransferFailed { .. }
+        )
+    }) {
+        glib::MainContext::default().iteration(true);
+    }
+
+    assert!(matches!(
+        events.borrow().last(),
+        Some(OperationEvent::Pasted { .. })
+    ));
+    let duplicate_name = OsString::from_vec(b"photo-\xff copy.jpg".to_vec());
+    let duplicate = destination.join(duplicate_name);
+    assert_eq!(fs::read(duplicate)?, b"original-content");
     Ok(())
 }
 

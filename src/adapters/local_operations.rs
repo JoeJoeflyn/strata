@@ -71,34 +71,45 @@ fn transfer_is_noop(source: &gio::File, destination: &gio::File, target: &gio::F
     source.equal(target) || source.equal(destination) || destination.has_prefix(source)
 }
 
-fn parse_copy_suffix(stem: &str) -> (&str, Option<u64>) {
-    if let Some(base) = stem.strip_suffix(" copy") {
-        return (base, Some(1));
+fn parse_copy_suffix(stem: &OsStr) -> (&OsStr, Option<u64>) {
+    let bytes = stem.as_bytes();
+    if let Some(base) = bytes.strip_suffix(b" copy") {
+        return (OsStr::from_bytes(base), Some(1));
     }
-    if let Some((prefix, suffix)) = stem.rsplit_once(" copy ")
-        && !suffix.is_empty()
-        && !suffix.starts_with('0')
-        && suffix.chars().all(|c| c.is_ascii_digit())
-        && let Ok(n) = suffix.parse::<u64>()
-        && n >= 1
+    if let Some(separator) = bytes
+        .windows(b" copy ".len())
+        .rposition(|window| window == b" copy ")
     {
-        return (prefix, Some(n));
+        let suffix = &bytes[separator + b" copy ".len()..];
+        if !suffix.is_empty()
+            && suffix[0] != b'0'
+            && suffix.iter().all(u8::is_ascii_digit)
+            && let Ok(suffix) = std::str::from_utf8(suffix)
+            && let Ok(number) = suffix.parse::<u64>()
+            && number < u64::MAX
+        {
+            return (OsStr::from_bytes(&bytes[..separator]), Some(number));
+        }
     }
     (stem, None)
 }
 
-fn duplicate_candidate_name(base_stem: &str, extension: Option<&str>, copy_number: u64) -> String {
-    if copy_number <= 1 {
-        match extension {
-            Some(ext) => format!("{base_stem} copy.{ext}"),
-            None => format!("{base_stem} copy"),
-        }
-    } else {
-        match extension {
-            Some(ext) => format!("{base_stem} copy {copy_number}.{ext}"),
-            None => format!("{base_stem} copy {copy_number}"),
-        }
+fn duplicate_candidate_name(
+    base_stem: &OsStr,
+    extension: Option<&OsStr>,
+    copy_number: u64,
+) -> OsString {
+    let mut candidate = base_stem.as_bytes().to_vec();
+    candidate.extend_from_slice(b" copy");
+    if copy_number > 1 {
+        candidate.push(b' ');
+        candidate.extend_from_slice(copy_number.to_string().as_bytes());
     }
+    if let Some(extension) = extension {
+        candidate.push(b'.');
+        candidate.extend_from_slice(extension.as_bytes());
+    }
+    OsString::from_vec(candidate)
 }
 
 fn duplicate_target(
@@ -108,26 +119,17 @@ fn duplicate_target(
     cancellable: &gio::Cancellable,
 ) -> Result<gio::File, glib::Error> {
     cancellable.set_error_if_cancelled()?;
-    let name_str = name.to_string_lossy();
+    let name = name.as_os_str();
     let (stem, extension) = if is_directory {
-        (name_str.as_ref(), None)
+        (name, None)
     } else {
-        let ext = name
-            .extension()
-            .and_then(|e| e.to_str())
-            .filter(|e| !e.is_empty());
-        let stem = name
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(name_str.as_ref());
-        (stem, ext)
+        let path = Path::new(name);
+        let extension = path.extension().filter(|extension| !extension.is_empty());
+        (path.file_stem().unwrap_or(name), extension)
     };
     let (base_stem, copy_num) = parse_copy_suffix(stem);
-    let start_index = match copy_num {
-        Some(n) => n + 1,
-        None => 1,
-    };
-    for index in start_index..u64::MAX {
+    let start_index = copy_num.map_or(1, |number| number + 1);
+    for index in start_index..=u64::MAX {
         cancellable.set_error_if_cancelled()?;
         let candidate_name = duplicate_candidate_name(base_stem, extension, index);
         let candidate = destination.child(&candidate_name);

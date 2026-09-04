@@ -63,6 +63,7 @@ pub(crate) enum ParseOperation {
     PreviewImage,
     PreviewPdf,
     PreviewMedia,
+    PreviewDatabase,
 }
 
 impl ParseOperation {
@@ -75,14 +76,15 @@ impl ParseOperation {
             Self::PreviewImage => "preview-image",
             Self::PreviewPdf => "preview-pdf",
             Self::PreviewMedia => "preview-media",
+            Self::PreviewDatabase => "preview-database",
         }
     }
 
     fn output_name(self) -> &'static str {
-        if self == Self::PreviewMedia {
-            "result.media"
-        } else {
-            "result.png"
+        match self {
+            Self::PreviewMedia => "result.media",
+            Self::PreviewDatabase => "result.txt",
+            _ => "result.png",
         }
     }
 
@@ -102,7 +104,7 @@ impl ParseOperation {
             | Self::ThumbnailVideo => Some((256, 256, 256 * 256)),
             Self::PreviewImage => Some((1_400, 1_400, 1_400 * 1_400)),
             Self::PreviewPdf => Some((1_400, 1_800, 2_500_000)),
-            Self::PreviewMedia => None,
+            Self::PreviewMedia | Self::PreviewDatabase => None,
         }
     }
 
@@ -113,6 +115,7 @@ impl ParseOperation {
             | Self::ThumbnailPdf
             | Self::PreviewImage
             | Self::PreviewPdf => Some(MAX_RASTER_INPUT_BYTES),
+            Self::PreviewDatabase => Some(FILE_SIZE_LIMIT_BYTES),
             Self::ThumbnailVideo | Self::PreviewMedia => None,
         }
     }
@@ -517,6 +520,8 @@ fn valid_output(operation: ParseOperation, data: &[u8]) -> bool {
     if operation == ParseOperation::PreviewMedia {
         data.starts_with(b"\x1a\x45\xdf\xa3")
             || data.get(4..8).is_some_and(|signature| signature == b"ftyp")
+    } else if operation == ParseOperation::PreviewDatabase {
+        true
     } else {
         let Some((width, height)) = png_dimensions(data) else {
             return false;

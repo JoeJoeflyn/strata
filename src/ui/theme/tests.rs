@@ -175,6 +175,7 @@ theme = "azure-glow"
         MediaPreviewBackend::Automatic
     );
     assert!(!preferences.search_open_files_directly);
+    assert!(!preferences.type_to_search);
     assert!(!preferences.reduce_motion);
     assert_eq!(preferences.browser_mode, "columns");
     assert_eq!(preferences.browser_density, "compact");
@@ -249,6 +250,7 @@ fn general_preferences_round_trip() {
         folder_peeking: false,
         single_click_previews: false,
         search_open_files_directly: true,
+        type_to_search: true,
         reduce_motion: true,
         list_file_clicks: 1,
         list_folder_clicks: 2,
@@ -266,6 +268,7 @@ fn general_preferences_round_trip() {
     assert!(!restored.folder_peeking);
     assert!(!restored.single_click_previews);
     assert!(restored.search_open_files_directly);
+    assert!(restored.type_to_search);
     assert!(restored.reduce_motion);
     assert_eq!(restored.list_file_clicks, 1);
     assert_eq!(restored.list_folder_clicks, 2);

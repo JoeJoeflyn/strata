@@ -577,7 +577,7 @@ impl ModeViews {
             .any(|entry| entry.text().is_empty() && widget_has_focus(entry, focused.as_ref()))
     }
 
-    pub fn show_filter(&self) -> bool {
+    pub fn show_filter_with_query(&self, query: Option<&str>) -> bool {
         let pane = match self.mode {
             BrowserMode::Columns => None,
             BrowserMode::Grid => self.grid_panes.first(),
@@ -591,7 +591,7 @@ impl ModeViews {
             return false;
         };
         button.set_active(true);
-        entry.grab_focus();
+        super::browser::focus_filter_entry(entry, query);
         true
     }
 
@@ -1551,7 +1551,15 @@ fn build_grid_pane(
     let targets: super::marquee::MarqueeTargets = Rc::new(RefCell::new(Vec::new()));
     let (collection, marquee) =
         collection_with_marquee(&root, scroll, targets.clone(), "grid-card");
-    content.append(&collection);
+    content.append(&super::inline_search::wrap(
+        &collection,
+        &controls.filter_entry,
+        context
+            .browser
+            .location_at(depth)
+            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf)),
+        &context.browser,
+    ));
     marquee.add_origin_surface(&header);
     let pane = Pane {
         depth,
@@ -2728,7 +2736,14 @@ fn build_explorer_pane(
         .vexpand(true)
         .build();
     table_scroll.add_css_class("fixed-scrollbar");
-    content.append(&table_scroll);
+    content.append(&super::inline_search::wrap(
+        &table_scroll,
+        &filter_entry,
+        browser
+            .location_at(depth)
+            .and_then(|location| location.native_path().map(std::path::Path::to_path_buf)),
+        &browser,
+    ));
     let pane = Pane {
         depth,
         shell,

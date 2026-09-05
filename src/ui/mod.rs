@@ -5,6 +5,7 @@ mod browser;
 mod browser_modes;
 mod controls;
 mod entry_list_model;
+mod inline_search;
 mod marquee;
 mod motion;
 mod preview;

@@ -671,6 +671,18 @@ fn general_page(
     });
     preferences.append(&search_open_row);
 
+    let type_to_search_enabled = manager.type_to_search();
+    let (type_to_search_row, type_to_search) = settings_option(
+        "Type to search",
+        "Start filtering the active pane when you type in the file browser.",
+        type_to_search_enabled,
+    );
+    let manager_for_type_to_search = manager.clone();
+    type_to_search.connect_active_notify(move |toggle| {
+        manager_for_type_to_search.set_type_to_search(toggle.is_active());
+    });
+    preferences.append(&type_to_search_row);
+
     append_heading(&preferences, "REFRESH");
     let interval = manager.auto_refresh_interval();
     let options = ["Off", "1 min", "5 min", "10 min"];

@@ -1651,6 +1651,48 @@ fn notify_filter_query_skips_unchanged_folded_text() {
     assert!(status.success(), "isolated GTK filter-query test failed");
 }
 
+#[test]
+fn seeded_filter_keeps_first_character_when_typing_continues() {
+    const CHILD: &str = "STRATA_SEEDED_FILTER_GTK_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(
+            std::env::current_exe().expect("test executable should exist"),
+        )
+        .args([
+            "--exact",
+            "ui::browser::tests::seeded_filter_keeps_first_character_when_typing_continues",
+        ])
+        .env(CHILD, "1")
+        .status()
+        .expect("isolated seeded filter test should start");
+        assert!(status.success());
+        return;
+    }
+    if gtk::init().is_err() {
+        return;
+    }
+    let entry = gtk::Entry::new();
+    let window = gtk::Window::builder().child(&entry).build();
+    window.present();
+    let text = entry
+        .delegate()
+        .expect("entry should have an editable delegate")
+        .downcast::<gtk::Text>()
+        .expect("entry delegate should be GtkText");
+    let suffix = &"LICENSE"[1..];
+    for seed in ["L", "é", "文"] {
+        entry.grab_focus();
+        super::focus_filter_entry(&entry, Some(seed));
+        assert_eq!(entry.selection_bounds(), None);
+        assert_eq!(entry.position(), seed.chars().count() as i32);
+        text.emit_by_name::<()>("insert-at-cursor", &[&suffix]);
+        assert_eq!(entry.text(), format!("{seed}{suffix}"));
+    }
+    super::focus_filter_entry(&entry, None);
+    assert_eq!(entry.text(), format!("文{suffix}"));
+    window.destroy();
+}
+
 const SCROLL_PIN_GTK_CHILD: &str = "STRATA_SCROLL_PIN_GTK_CHILD";
 const SCROLL_PIN_TEST: &str =
     "ui::browser::tests::waiting_to_scroll_does_not_pin_an_unallocated_view";

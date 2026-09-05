@@ -2822,6 +2822,17 @@ colorchooser colorswatch overlay {
   opacity: 1;
 }
 
+.file-search-path {
+  color: @theme_dim_text;
+  font-size: 0.85em;
+}
+
+.file-list row:selected .file-search-path,
+.file-list row:hover .file-search-path,
+.file-list .file-row.active-path .file-search-path {
+  color: @theme_text;
+}
+
 .file-size {
   background: @theme_surface;
   color: @theme_dim_text;

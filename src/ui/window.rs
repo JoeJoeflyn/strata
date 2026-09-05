@@ -42,6 +42,18 @@ enum MouseHistoryAction {
     Forward,
 }
 
+#[derive(Clone)]
+struct TypeToSearch {
+    view: BrowserView,
+    preferences: Rc<ThemeManager>,
+}
+
+impl TypeToSearch {
+    fn show(&self, query: char) -> bool {
+        self.preferences.type_to_search() && self.view.show_filter_with_query(&query.to_string())
+    }
+}
+
 fn mouse_history_action(button: u32) -> Option<MouseHistoryAction> {
     match button {
         8 => Some(MouseHistoryAction::Back),
@@ -506,7 +518,18 @@ fn present_target(
     });
     window.add_controller(location_cancel);
     install_modal_focus_trap(&window);
-    install_keyboard_navigation(&window, &browser, &sidebar, &sidebar_toggle, &preview);
+    let type_to_search = TypeToSearch {
+        view: browser.clone(),
+        preferences: theme_manager.clone(),
+    };
+    install_keyboard_navigation(
+        &window,
+        &browser,
+        &sidebar,
+        &sidebar_toggle,
+        &preview,
+        &type_to_search,
+    );
     let browser_controller = browser.browser();
     schedule_after_first_paint(&window, &sidebar);
     window.connect_destroy(move |_| {
@@ -630,6 +653,7 @@ fn install_keyboard_navigation(
     sidebar: &SidebarView,
     sidebar_toggle: &gtk::ToggleButton,
     preview: &PreviewDrawer,
+    type_to_search: &TypeToSearch,
 ) {
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -638,6 +662,7 @@ fn install_keyboard_navigation(
     let sidebar_widget = sidebar.widget.clone();
     let sidebar_toggle = sidebar_toggle.clone();
     let preview = preview.clone();
+    let type_to_search = type_to_search.clone();
     let dialog_parent = window.clone();
     let focus_before_sidebar = Rc::new(RefCell::new(None::<gtk::Widget>));
     let weak_browser = Rc::downgrade(&view.browser());
@@ -754,6 +779,12 @@ fn install_keyboard_navigation(
             return glib::Propagation::Proceed;
         }
         if !text_has_focus && is_undo_shortcut(key, modifiers) && view.undo_last_operation() {
+            return glib::Propagation::Stop;
+        }
+        if view.item_view_has_focus()
+            && let Some(query) = type_to_search_query(key, modifiers)
+            && type_to_search.show(query)
+        {
             return glib::Propagation::Stop;
         }
         if alt
@@ -963,6 +994,17 @@ fn is_undo_shortcut(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> bo
         && !modifiers
             .intersects(gtk::gdk::ModifierType::SHIFT_MASK | gtk::gdk::ModifierType::ALT_MASK)
         && matches!(key, gtk::gdk::Key::z | gtk::gdk::Key::Z)
+}
+
+fn type_to_search_query(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> Option<char> {
+    if modifiers.intersects(
+        gtk::gdk::ModifierType::CONTROL_MASK
+            | gtk::gdk::ModifierType::ALT_MASK
+            | gtk::gdk::ModifierType::SUPER_MASK,
+    ) {
+        return None;
+    }
+    key.to_unicode().filter(|character| !character.is_control())
 }
 
 fn is_open_terminal_shortcut(key: gtk::gdk::Key, modifiers: gtk::gdk::ModifierType) -> bool {

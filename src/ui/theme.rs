@@ -110,6 +110,8 @@ struct Preferences {
     #[serde(default)]
     search_open_files_directly: bool,
     #[serde(default)]
+    type_to_search: bool,
+    #[serde(default)]
     reduce_motion: bool,
     #[serde(default = "default_browser_mode")]
     browser_mode: String,
@@ -167,6 +169,7 @@ impl Default for Preferences {
             hardware_accelerated_video_previews: None,
             video_preview_backend: default_video_preview_backend(),
             search_open_files_directly: false,
+            type_to_search: false,
             reduce_motion: false,
             browser_mode: default_browser_mode(),
             browser_density: default_browser_density(),
@@ -492,6 +495,15 @@ impl ThemeManager {
 
     pub fn set_search_open_files_directly(&self, enabled: bool) {
         self.preferences.borrow_mut().search_open_files_directly = enabled;
+        self.save_preferences();
+    }
+
+    pub fn type_to_search(&self) -> bool {
+        self.preferences.borrow().type_to_search
+    }
+
+    pub fn set_type_to_search(&self, enabled: bool) {
+        self.preferences.borrow_mut().type_to_search = enabled;
         self.save_preferences();
     }
 

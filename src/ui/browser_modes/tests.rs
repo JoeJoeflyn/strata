@@ -261,6 +261,8 @@ fn run_source_index_map_checks() {
     );
 }
 
+mod skeletons;
+
 #[test]
 fn source_index_map_tracks_filter_sort_and_placeholder() {
     if std::env::var_os(GTK_CHILD).is_some() {

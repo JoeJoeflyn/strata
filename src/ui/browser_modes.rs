@@ -1419,6 +1419,7 @@ fn build_grid_pane(
     let (shell, header, content, model, stack, status, spinner, truncated_hint) = pane_base(
         title,
         "grid-pane",
+        &grid_loading_skeleton(options.thumbnail_size.get(), options.density),
         Some(controls.leading.clone().upcast()),
         Some(controls.actions.clone().upcast()),
     );
@@ -1502,12 +1503,29 @@ fn build_grid_pane(
     let sections_for_size = Rc::downgrade(&sections);
     let thumbnail_size_for_change = options.thumbnail_size.clone();
     let value_for_change = controls.thumbnail_value.clone();
+    let loading_stack = stack.downgrade();
+    let loading_context = Rc::downgrade(&context);
     controls
         .thumbnail_scale
         .connect_value_changed(move |scale| {
             let size = scale.value().round() as i32;
             value_for_change.set_label(&format!("{size} px"));
             thumbnail_size_for_change.set(size);
+            if let (Some(stack), Some(context)) =
+                (loading_stack.upgrade(), loading_context.upgrade())
+            {
+                let was_loading = stack.visible_child_name().as_deref() == Some("loading");
+                if let Some(old) = stack.child_by_name("loading") {
+                    stack.remove(&old);
+                }
+                stack.add_named(
+                    &grid_loading_skeleton(size, context.density.get()),
+                    Some("loading"),
+                );
+                if was_loading {
+                    stack.set_visible_child_name("loading");
+                }
+            }
             let Some(sections) = sections_for_size.upgrade() else {
                 return;
             };
@@ -2128,6 +2146,12 @@ fn grid_card_parts(card: &gtk::Box) -> Option<(gtk::Image, gtk::Inscription, gtk
 }
 
 fn configure_grid_density(pane: &Pane, density: BrowserDensity) {
+    if let Some(loading) = pane.stack.child_by_name("loading")
+        && let Some(scroll) = loading.first_child().and_downcast::<gtk::ScrolledWindow>()
+        && let Some(grid) = scroll.child().and_downcast::<gtk::GridView>()
+    {
+        configure_grid_view_density(&grid, density);
+    }
     if let Some(context) = pane.grid.as_ref() {
         context.density.set(density);
     }
@@ -2421,9 +2445,11 @@ fn build_explorer_pane(
     let (filter_entry, filter_revealer, filter_button) =
         filter_controls("Filter explorer (Ctrl+F)");
     actions.append(&filter_button);
+    let columns = ExplorerColumnLayout::new();
     let (shell, header, content, model, stack, status, spinner, truncated_hint) = pane_base(
         title,
         "explorer-pane",
+        &explorer_loading_skeleton(&columns),
         Some(navigation.upcast()),
         Some(actions.upcast()),
     );
@@ -2462,7 +2488,6 @@ fn build_explorer_pane(
     let syncing_selection = Rc::new(Cell::new(false));
     let sections: Rc<RefCell<Vec<PaneSection>>> = Rc::new(RefCell::new(Vec::new()));
 
-    let columns = ExplorerColumnLayout::new();
     let headings = explorer_headings(&browser, depth, columns.clone());
 
     let factory = gtk::SignalListItemFactory::new();
@@ -2773,9 +2798,94 @@ fn build_explorer_pane(
     pane
 }
 
+fn grid_loading_skeleton(thumbnail_size: i32, density: BrowserDensity) -> gtk::Box {
+    use super::loading_skeleton::{block, container, name_width, scroll};
+
+    let skeleton = container();
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(move |_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else {
+            return;
+        };
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 3);
+        card.add_css_class("grid-card");
+        card.set_halign(gtk::Align::Fill);
+        ensure_grid_card_slot(&card, thumbnail_size);
+        let slot = grid_card_icon_slot(thumbnail_size);
+        let icon = block(slot, slot);
+        icon.set_halign(gtk::Align::Center);
+        card.append(&icon);
+        let label = block(96, 10);
+        label.set_halign(gtk::Align::Center);
+        label.set_margin_top(3);
+        card.append(&label);
+        item.set_child(Some(&card));
+    });
+    factory.connect_bind(|_, item| {
+        if let Some(item) = item.downcast_ref::<gtk::ListItem>()
+            && let Some(card) = item.child()
+            && let Some(label) = card.last_child()
+        {
+            label.set_width_request(name_width(item.position()));
+        }
+    });
+    let model = gtk::StringList::new(&[""; 60]);
+    let grid = gtk::GridView::new(Some(gtk::NoSelection::new(Some(model))), Some(factory));
+    grid.add_css_class("file-grid");
+    grid.set_valign(gtk::Align::Start);
+    configure_grid_view_density(&grid, density);
+    let scroll = scroll(&grid);
+    scroll.set_vexpand(true);
+    skeleton.append(&scroll);
+    skeleton
+}
+
+fn explorer_loading_skeleton(columns: &ExplorerColumnLayout) -> gtk::Box {
+    use super::loading_skeleton::{ROW_COUNT, block, container, name_width, scroll};
+
+    let skeleton = container();
+    let table = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    table.set_valign(gtk::Align::Start);
+    let headings = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    headings.add_css_class("explorer-headings");
+    for (index, width) in [40, 36, 28, 30, 58].into_iter().enumerate() {
+        let cell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        cell.add_css_class("explorer-heading-cell");
+        let bar = block(width, 8);
+        bar.set_margin_start(12);
+        cell.append(&bar);
+        register_explorer_column_cell(columns, index, &cell);
+        headings.append(&cell);
+    }
+    table.append(&headings);
+    for index in 0..ROW_COUNT {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row.add_css_class("explorer-row");
+        for (column, width) in [name_width(index).min(92), 60, 38, 56, 94]
+            .into_iter()
+            .enumerate()
+        {
+            let cell = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            cell.add_css_class("explorer-metadata-cell");
+            if column == 0 {
+                cell.append(&block(18, 18));
+            }
+            cell.append(&block(width, 10));
+            register_explorer_column_cell(columns, column, &cell);
+            row.append(&cell);
+        }
+        table.append(&row);
+    }
+    let scroll = scroll(&table);
+    scroll.set_vexpand(true);
+    skeleton.append(&scroll);
+    skeleton
+}
+
 fn pane_base(
     title: &str,
     class: &str,
+    loading: &gtk::Box,
     header_leading: Option<gtk::Widget>,
     header_actions: Option<gtk::Widget>,
 ) -> (
@@ -2820,13 +2930,12 @@ fn pane_base(
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.set_hexpand(true);
     content.set_vexpand(true);
-    let loading = super::browser::loading_skeleton();
     let status = gtk::Label::new(Some("This directory is empty"));
     status.add_css_class("status-message");
     status.set_wrap(true);
     let stack = gtk::Stack::builder().hexpand(true).vexpand(true).build();
     stack.add_named(&content, Some("content"));
-    stack.add_named(&loading, Some("loading"));
+    stack.add_named(loading, Some("loading"));
     stack.add_named(&status, Some("status"));
     stack.set_visible_child_name("loading");
     shell.append(&stack);

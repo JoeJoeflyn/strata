@@ -176,3 +176,27 @@ fn column_decls_prefer_position_then_fall_back_to_name() {
     assert_eq!(column_decl_for(&columns, &reordered, 0), "TEXT");
     assert_eq!(column_decl_for(&[], &headers, 0), "");
 }
+
+#[test]
+fn parse_csv_rows_preserves_single_column_empty_and_null_rows() {
+    let csv = "name\n\x01\n\"\"\nvisible\n\"\"\n";
+    let (headers, rows) = super::parse_csv_rows(csv);
+    assert_eq!(headers, vec!["name"]);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0], vec!["\x01"]);
+    assert_eq!(rows[1], vec![""]);
+    assert_eq!(rows[2], vec!["visible"]);
+    assert_eq!(rows[3], vec![""]);
+}
+
+#[test]
+fn parse_csv_rows_handles_multi_column_empty_and_null_cells() {
+    let csv = "c1,c2\r\n\x01,\"\"\r\n\"\",\x01\r\n\x01,\x01\r\n\"\",\"\"\r\n";
+    let (headers, rows) = super::parse_csv_rows(csv);
+    assert_eq!(headers, vec!["c1", "c2"]);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0], vec!["\x01", ""]);
+    assert_eq!(rows[1], vec!["", "\x01"]);
+    assert_eq!(rows[2], vec!["\x01", "\x01"]);
+    assert_eq!(rows[3], vec!["", ""]);
+}

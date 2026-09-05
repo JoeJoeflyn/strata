@@ -528,3 +528,26 @@ fn assert_process_marker_stopped(marker: &Path) {
         "renderer descendant survived termination"
     );
 }
+
+#[test]
+fn database_sandbox_command_binds_wal_and_journal_companions() {
+    let command = sandbox_command(
+        Path::new("/tmp/strata"),
+        Path::new("/home/alice/data/app.db"),
+        Path::new("/tmp/private-output"),
+        ParseOperation::PreviewDatabase,
+        0,
+        MediaPreviewBackend::Software,
+        &[],
+    );
+    let arguments: Vec<_> = command
+        .get_args()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect();
+    let joined = arguments.join(" ");
+
+    assert!(joined.contains("--ro-bind /home/alice/data/app.db /input.db"));
+    assert!(joined.contains("--ro-bind-try /home/alice/data/app.db-wal /input.db-wal"));
+    assert!(joined.contains("--ro-bind-try /home/alice/data/app.db-shm /input.db-shm"));
+    assert!(joined.contains("--ro-bind-try /home/alice/data/app.db-journal /input.db-journal"));
+}

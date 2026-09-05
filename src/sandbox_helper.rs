@@ -603,6 +603,7 @@ fn bounded_output(command: &mut Command, max_bytes: u64) -> io::Result<Output> {
 mod tests;
 
 const MAX_DATABASE_ROWS: i32 = 50;
+pub const SQLITE_NULL_SENTINEL: &str = "\x01";
 
 #[derive(Clone, Debug)]
 struct DbTableItem {
@@ -621,7 +622,7 @@ fn render_database(path: &Path, encoded: i32) -> Result<Vec<u8>, String> {
     const STRIDE: i32 = 100_000;
     if encoded < 0 {
         let first = &tables[0];
-        let (schema, types, count_str, rows) = query_table_details(path, &first.name, 0);
+        let (schema, types, count_str, rows) = query_table_details(path, &first.name, 0, true);
         let tables_block = tables
             .iter()
             .map(|t| format!("{}\t{}", t.name, if t.is_view { "view" } else { "table" }))
@@ -638,7 +639,9 @@ fn render_database(path: &Path, encoded: i32) -> Result<Vec<u8>, String> {
         let item = tables
             .get(table_index)
             .ok_or_else(|| "Table index out of range".to_owned())?;
-        let (schema, types, count_str, rows) = query_table_details(path, &item.name, page);
+        let should_count = page == 0;
+        let (schema, types, count_str, rows) =
+            query_table_details(path, &item.name, page, should_count);
         let output = format!(
             "{}\n---SCHEMA---\n{schema}\n---TYPES---\n{types}\n---COUNT---\n{count_str}\n---ROWS---\n{rows}",
             item.name
@@ -671,7 +674,12 @@ fn list_tables(path: &Path) -> Result<Vec<DbTableItem>, String> {
     Ok(items)
 }
 
-fn query_table_details(path: &Path, name: &str, page: usize) -> (String, String, String, String) {
+fn query_table_details(
+    path: &Path,
+    name: &str,
+    page: usize,
+    should_count: bool,
+) -> (String, String, String, String) {
     let quoted = quote_sql_string(name);
     let ident = quote_sql_ident(name);
     let schema = sqlite_scalar(
@@ -684,8 +692,11 @@ fn query_table_details(path: &Path, name: &str, page: usize) -> (String, String,
         &format!("SELECT name || char(9) || \"type\" FROM pragma_table_info({quoted});"),
     )
     .unwrap_or_default();
-    let count_str =
-        sqlite_scalar(path, &format!("SELECT COUNT(*) FROM {ident};")).unwrap_or_default();
+    let count_str = if should_count {
+        sqlite_scalar(path, &format!("SELECT COUNT(*) FROM {ident};")).unwrap_or_default()
+    } else {
+        String::new()
+    };
     let offset = page * (MAX_DATABASE_ROWS as usize);
     let rows = sqlite_query(
         path,
@@ -709,7 +720,13 @@ fn sqlite_scalar(path: &Path, sql: &str) -> Result<String, String> {
 fn sqlite_query(path: &Path, sql: &str) -> Result<String, String> {
     sqlite_command(
         path,
-        &["-readonly", "-csv", "-header"],
+        &[
+            "-readonly",
+            "-csv",
+            "-header",
+            "-nullvalue",
+            SQLITE_NULL_SENTINEL,
+        ],
         sql,
         "Unable to query database table",
     )

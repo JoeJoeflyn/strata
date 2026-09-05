@@ -47,6 +47,7 @@ struct PreviewState {
     database_tables: RefCell<Vec<crate::services::DatabaseTableItem>>,
     database_active: Cell<Option<usize>>,
     database_page: Cell<usize>,
+    database_total_rows: Cell<Option<usize>>,
     database_content: RefCell<Option<gtk::Box>>,
     split: RefCell<Option<gtk::Paned>>,
     occupied_width: RefCell<Option<Rc<dyn Fn() -> i32>>>,
@@ -151,6 +152,7 @@ impl PreviewDrawer {
             database_tables: RefCell::new(Vec::new()),
             database_active: Cell::new(None),
             database_page: Cell::new(0),
+            database_total_rows: Cell::new(None),
             database_content: RefCell::new(None),
             split: RefCell::new(None),
             occupied_width: RefCell::new(None),
@@ -385,6 +387,7 @@ impl PreviewState {
         self.current_request.set(None);
         self.load.borrow_mut().take();
         self.pdf_loads.borrow_mut().clear();
+        self.database_total_rows.set(None);
         self.clear_content();
         self.revealer.set_transition_duration(0);
         self.revealer.set_reveal_child(false);
@@ -409,6 +412,7 @@ impl PreviewState {
         if pdf_page < 0 {
             self.database_active.set(None);
             self.database_page.set(0);
+            self.database_total_rows.set(None);
             self.database_tables.replace(Vec::new());
             self.show_loading();
         } else if let Some(area) = self.database_content.borrow().clone() {
@@ -1184,6 +1188,10 @@ impl PreviewState {
     ) {
         clear_box(content_area);
         clear_box(&self.actions);
+        if data.total_rows.is_some() {
+            self.database_total_rows.set(data.total_rows);
+        }
+        let total_rows = data.total_rows.or_else(|| self.database_total_rows.get());
         let (headers, data_rows) = parse_csv_rows(&data.rows_csv);
         let page = data.page;
         let col_count = if headers.is_empty() {
@@ -1263,6 +1271,7 @@ impl PreviewState {
                     }
                     state.database_active.set(Some(idx));
                     state.database_page.set(0);
+                    state.database_total_rows.set(None);
                     if let Some(area) = state.database_content.borrow().clone() {
                         clear_box(&area);
                         area.append(&database_spinner());
@@ -1350,7 +1359,9 @@ impl PreviewState {
             crate::assets::icons::COPY,
             16,
         )));
-        let page_csv = data.rows_csv.clone();
+        let page_csv = data
+            .rows_csv
+            .replace(crate::sandbox_helper::SQLITE_NULL_SENTINEL, "");
         let schema_sql = data.schema.clone();
         let stack_for_copy = stack.clone();
         copy_button.connect_clicked(move |btn| {
@@ -1434,11 +1445,16 @@ impl PreviewState {
                         .map_or("", String::as_str);
                     label.set_halign(gtk::Align::Start);
                     label.set_xalign(0.0);
-                    if cell.is_empty() {
+                    if cell == crate::sandbox_helper::SQLITE_NULL_SENTINEL {
                         label.set_text("NULL");
                         label.add_css_class("preview-database-cell-null");
                         label.remove_css_class("preview-database-cell-numeric");
                         label.set_tooltip_text(None);
+                    } else if cell.is_empty() {
+                        label.set_text("");
+                        label.remove_css_class("preview-database-cell-null");
+                        label.remove_css_class("preview-database-cell-numeric");
+                        label.set_tooltip_text(Some("(empty string)"));
                     } else if declares_blob(&decl) {
                         label.set_text("BLOB");
                         label.add_css_class("preview-database-cell-null");
@@ -1478,7 +1494,7 @@ impl PreviewState {
                 .build();
             data_box.append(&scroll);
 
-            let has_more = match data.total_rows {
+            let has_more = match total_rows {
                 Some(total) => (page + 1) * DATABASE_PAGE_SIZE < total,
                 None => rows_data.len() >= DATABASE_PAGE_SIZE,
             };
@@ -1489,7 +1505,7 @@ impl PreviewState {
 
                 let start = page * DATABASE_PAGE_SIZE + 1;
                 let end = start + rows_data.len().saturating_sub(1);
-                let range_text = match data.total_rows {
+                let range_text = match total_rows {
                     Some(total) if total > 0 => {
                         format!("{start}–{end} of {total} · {col_count} cols")
                     }
@@ -1500,8 +1516,7 @@ impl PreviewState {
                 range_label.add_css_class("preview-database-pager-range");
                 range_label.set_halign(gtk::Align::Start);
                 range_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                range_label
-                    .set_tooltip_text(Some(&database_count_badge(data.total_rows, col_count)));
+                range_label.set_tooltip_text(Some(&database_count_badge(total_rows, col_count)));
 
                 let pager_spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
                 pager_spacer.set_hexpand(true);
@@ -1512,8 +1527,7 @@ impl PreviewState {
                 prev.set_child(Some(&prev_icon));
                 prev.set_sensitive(page > 0);
 
-                let total_pages = data
-                    .total_rows
+                let total_pages = total_rows
                     .map(|t| t.div_ceil(DATABASE_PAGE_SIZE))
                     .unwrap_or(0);
                 let page_info = if total_pages > 0 {
@@ -2071,6 +2085,7 @@ fn parse_csv_rows(csv: &str) -> (Vec<String>, Vec<Vec<String>>) {
     let mut current_row: Vec<String> = Vec::new();
     let mut current_cell = String::new();
     let mut in_quotes = false;
+    let mut saw_cell_content = false;
     let mut chars = csv.chars().peekable();
 
     while let Some(ch) = chars.next() {
@@ -2087,42 +2102,41 @@ fn parse_csv_rows(csv: &str) -> (Vec<String>, Vec<Vec<String>>) {
             }
         } else {
             match ch {
-                '"' => in_quotes = true,
+                '"' => {
+                    in_quotes = true;
+                    saw_cell_content = true;
+                }
                 ',' => {
                     current_row.push(std::mem::take(&mut current_cell));
+                    saw_cell_content = false;
                 }
                 '\r' => {
                     if chars.peek() == Some(&'\n') {
                         chars.next();
                     }
-                    current_row.push(std::mem::take(&mut current_cell));
-                    if !current_row.is_empty()
-                        && (current_row.len() > 1 || !current_row[0].is_empty())
-                    {
+                    if saw_cell_content || !current_cell.is_empty() || !current_row.is_empty() {
+                        current_row.push(std::mem::take(&mut current_cell));
                         rows.push(std::mem::take(&mut current_row));
-                    } else {
-                        current_row.clear();
+                        saw_cell_content = false;
                     }
                 }
                 '\n' => {
-                    current_row.push(std::mem::take(&mut current_cell));
-                    if !current_row.is_empty()
-                        && (current_row.len() > 1 || !current_row[0].is_empty())
-                    {
+                    if saw_cell_content || !current_cell.is_empty() || !current_row.is_empty() {
+                        current_row.push(std::mem::take(&mut current_cell));
                         rows.push(std::mem::take(&mut current_row));
-                    } else {
-                        current_row.clear();
+                        saw_cell_content = false;
                     }
                 }
-                other => current_cell.push(other),
+                other => {
+                    current_cell.push(other);
+                    saw_cell_content = true;
+                }
             }
         }
     }
-    if in_quotes || !current_cell.is_empty() || !current_row.is_empty() {
+    if saw_cell_content || !current_cell.is_empty() || !current_row.is_empty() {
         current_row.push(current_cell);
-        if !current_row.is_empty() && (current_row.len() > 1 || !current_row[0].is_empty()) {
-            rows.push(current_row);
-        }
+        rows.push(current_row);
     }
 
     if rows.is_empty() {

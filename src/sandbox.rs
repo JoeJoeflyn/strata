@@ -221,7 +221,9 @@ pub(crate) fn parse(
     let result_path = output.path().join(operation.output_name());
     let metadata = fs::metadata(&result_path)
         .map_err(|_| "The preview renderer produced no output".to_owned())?;
-    if metadata.len() == 0 || metadata.len() > MAX_OUTPUT_BYTES {
+    if (metadata.len() == 0 && operation != ParseOperation::PreviewDatabase)
+        || metadata.len() > MAX_OUTPUT_BYTES
+    {
         return Err("The preview renderer produced an invalid output size".to_owned());
     }
     let data = fs::read(result_path).map_err(|error| error.to_string())?;
@@ -400,6 +402,16 @@ fn sandbox_command(
     let sandbox_input = sandbox_input_path(input);
     command.arg(executable).arg("/app/strata");
     command.arg("--ro-bind").arg(input).arg(&sandbox_input);
+    if operation == ParseOperation::PreviewDatabase {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let mut companion = input.as_os_str().to_os_string();
+            companion.push(suffix);
+            command
+                .arg("--ro-bind-try")
+                .arg(&companion)
+                .arg(format!("{sandbox_input}{suffix}"));
+        }
+    }
     if operation != ParseOperation::PreviewMedia {
         command.arg("--bind").arg(output).arg("/output");
     }

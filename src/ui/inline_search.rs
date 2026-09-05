@@ -2,7 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     time::Duration,
 };
@@ -11,7 +11,6 @@ use gtk::{glib, prelude::*};
 
 use crate::{
     app::Browser,
-    model::Location,
     services::{SearchEvent, SearchHandle, SearchItem, index_tree},
 };
 
@@ -138,6 +137,7 @@ pub(super) fn wrap(
         handle.query(query);
         state.handle.replace(Some(handle));
         let weak = Rc::downgrade(&state);
+        let result_root = root.clone();
         glib::timeout_add_local(Duration::from_millis(16), move || {
             let Some(state) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
@@ -183,7 +183,7 @@ pub(super) fn wrap(
                         .xalign(0.0)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
                         .build();
-                    let path = Location::local(item.path.clone()).display_path();
+                    let path = relative_result_path(&result_root, &item.path);
                     let origin = gtk::Label::builder()
                         .label(&path)
                         .xalign(0.0)
@@ -214,6 +214,13 @@ pub(super) fn wrap(
         });
     });
     stack.upcast()
+}
+
+fn relative_result_path(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[cfg(test)]

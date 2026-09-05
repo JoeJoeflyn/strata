@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
+use crate::model::Location;
 use std::{
     fs,
     time::{Instant, SystemTime},
@@ -29,6 +30,31 @@ fn wait_until(condition: impl Fn() -> bool) {
         while glib::MainContext::default().iteration(false) {}
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn result_paths_are_relative_to_the_search_root() {
+    let root = Path::new("/tmp/strata-search-demo");
+
+    assert_eq!(
+        relative_result_path(root, Path::new("/tmp/strata-search-demo/Videos/clip.mp4")),
+        "Videos/clip.mp4"
+    );
+    assert_eq!(
+        relative_result_path(root, Path::new("/tmp/strata-search-demo/notes.txt")),
+        "notes.txt"
+    );
+}
+
+#[test]
+fn paths_outside_the_search_root_remain_unchanged() {
+    assert_eq!(
+        relative_result_path(
+            Path::new("/tmp/search-root"),
+            Path::new("/tmp/other/file.txt")
+        ),
+        "/tmp/other/file.txt"
+    );
 }
 
 #[test]
@@ -62,19 +88,19 @@ fn alternate_view_search_finds_descendants_and_restores_the_original_view() {
         .downcast::<gtk::Stack>()
         .expect("local search stack");
     entry.set_text("stra");
-    wait_until(|| labels(&widget).contains(&root.join("github/strata").display().to_string()));
+    wait_until(|| labels(&widget).contains(&"github/strata".to_owned()));
     assert!(
         !labels(&widget)
             .iter()
             .any(|text| text.contains("outside-strata"))
     );
     entry.set_text("readme");
-    wait_until(|| labels(&widget).contains(&root.join("github/readme.txt").display().to_string()));
+    wait_until(|| labels(&widget).contains(&"github/readme.txt".to_owned()));
     entry.set_text("");
     wait_until(|| stack.visible_child_name().as_deref() == Some("files"));
     assert_eq!(stack.visible_child(), Some(original.upcast()));
     entry.set_text("stra");
-    wait_until(|| labels(&widget).contains(&root.join("github/strata").display().to_string()));
+    wait_until(|| labels(&widget).contains(&"github/strata".to_owned()));
     let controllers = entry.observe_controllers();
     let keys = (0..controllers.n_items())
         .filter_map(|index| controllers.item(index))

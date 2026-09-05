@@ -3,7 +3,7 @@
 use std::{cell::RefCell, collections::HashSet};
 
 use super::{
-    Preferences, Theme, azure_tokens, blend, builtins, configured_hardware_acceleration,
+    Preferences, TextSize, Theme, azure_tokens, blend, builtins, configured_hardware_acceleration,
     configured_video_preview_backend, is_omarchy_theme_event, merge_builtin_and_custom_themes,
     notify_live, slugify, sort_preferences, title_case_slug, tokens_from_quattro, validate_tokens,
 };
@@ -175,6 +175,7 @@ theme = "azure-glow"
         MediaPreviewBackend::Automatic
     );
     assert!(!preferences.search_open_files_directly);
+    assert!(!preferences.type_to_search);
     assert!(!preferences.reduce_motion);
     assert_eq!(preferences.browser_mode, "columns");
     assert_eq!(preferences.browser_density, "compact");
@@ -249,6 +250,7 @@ fn general_preferences_round_trip() {
         folder_peeking: false,
         single_click_previews: false,
         search_open_files_directly: true,
+        type_to_search: true,
         reduce_motion: true,
         list_file_clicks: 1,
         list_folder_clicks: 2,
@@ -266,6 +268,7 @@ fn general_preferences_round_trip() {
     assert!(!restored.folder_peeking);
     assert!(!restored.single_click_previews);
     assert!(restored.search_open_files_directly);
+    assert!(restored.type_to_search);
     assert!(restored.reduce_motion);
     assert_eq!(restored.list_file_clicks, 1);
     assert_eq!(restored.list_folder_clicks, 2);
@@ -368,6 +371,56 @@ theme = "azure-glow"
         Channel::parse(&preferences.release_channel),
         Channel::Stable
     );
+}
+
+#[test]
+fn text_size_defaults_to_medium() {
+    let preferences = Preferences::default();
+    assert_eq!(preferences.text_size, "medium");
+    assert_eq!(TextSize::parse(&preferences.text_size), TextSize::Medium);
+}
+
+#[test]
+fn small_and_large_text_sizes_round_trip_through_toml() {
+    for size in [TextSize::Small, TextSize::Large] {
+        let preferences = Preferences {
+            text_size: size.as_str().to_owned(),
+            ..Preferences::default()
+        };
+        let serialized = toml::to_string(&preferences).expect("preferences should serialize");
+        let restored: Preferences =
+            toml::from_str(&serialized).expect("preferences should deserialize");
+        assert_eq!(TextSize::parse(&restored.text_size), size);
+    }
+}
+
+#[test]
+fn unknown_text_size_value_parses_to_medium() {
+    assert_eq!(TextSize::parse("huge"), TextSize::Medium);
+}
+
+#[test]
+fn text_sizes_map_to_a_strictly_increasing_root_font_size() {
+    let small = TextSize::Small.root_font_px();
+    let medium = TextSize::Medium.root_font_px();
+    let large = TextSize::Large.root_font_px();
+    assert!(small < medium);
+    assert!(medium < large);
+    assert_eq!(medium, 13, "medium should match the unscaled base size");
+}
+
+#[test]
+fn legacy_preferences_without_text_size_default_to_medium() {
+    let preferences: Preferences = toml::from_str(
+        r#"
+mode = "theme"
+theme = "azure-glow"
+"#,
+    )
+    .expect("legacy preferences without text_size should remain valid");
+
+    assert_eq!(preferences.text_size, "medium");
+    assert_eq!(TextSize::parse(&preferences.text_size), TextSize::Medium);
 }
 
 #[test]
@@ -480,4 +533,77 @@ fn a_channel_change_with_no_surviving_views_clears_the_registry() {
 
     assert_eq!(ran.into_inner(), 0);
     assert!(live.is_empty());
+}
+
+#[test]
+fn preferences_folder_colors_round_trip() {
+    let mut preferences = Preferences::default();
+    assert!(preferences.folder_colors.is_empty());
+
+    let empty_serialized = toml::to_string_pretty(&preferences).expect("serialization succeeds");
+    assert!(!empty_serialized.contains("folder_colors"));
+
+    preferences
+        .folder_colors
+        .insert("/tmp/test-folder".to_owned(), "blue".to_owned());
+    preferences
+        .folder_colors
+        .insert("/tmp/custom-folder".to_owned(), "#34d399".to_owned());
+    let serialized = toml::to_string_pretty(&preferences).expect("serialization succeeds");
+    assert!(serialized.contains("folder_colors"));
+    assert!(serialized.contains("/tmp/test-folder"));
+    assert!(serialized.contains("/tmp/custom-folder"));
+
+    let deserialized: Preferences = toml::from_str(&serialized).expect("deserialization succeeds");
+    assert_eq!(
+        deserialized.folder_colors.get("/tmp/test-folder"),
+        Some(&"blue".to_owned())
+    );
+    assert_eq!(
+        deserialized
+            .folder_colors
+            .get("/tmp/test-folder")
+            .and_then(|c| crate::model::FolderColorValue::parse(c)),
+        Some(crate::model::FolderColorValue::Preset(
+            crate::model::FolderColor::Blue
+        ))
+    );
+    assert_eq!(
+        deserialized
+            .folder_colors
+            .get("/tmp/custom-folder")
+            .and_then(|c| crate::model::FolderColorValue::parse(c)),
+        Some(crate::model::FolderColorValue::Custom("#34d399".to_owned()))
+    );
+}
+
+#[test]
+fn preferences_custom_icons_round_trip() {
+    let mut preferences = Preferences::default();
+    assert!(preferences.custom_icons.is_empty());
+
+    let empty_serialized = toml::to_string_pretty(&preferences).expect("serialization succeeds");
+    assert!(!empty_serialized.contains("custom_icons"));
+
+    preferences.custom_icons.insert(
+        "/tmp/folder".to_owned(),
+        crate::assets::icons::PICTURES.to_owned(),
+    );
+    preferences
+        .custom_icons
+        .insert("/tmp/file.txt".to_owned(), "emoji:🚀".to_owned());
+    let serialized = toml::to_string_pretty(&preferences).expect("serialization succeeds");
+    assert!(serialized.contains("custom_icons"));
+    assert!(serialized.contains("/tmp/folder"));
+    assert!(serialized.contains(crate::assets::icons::PICTURES));
+
+    let deserialized: Preferences = toml::from_str(&serialized).expect("deserialization succeeds");
+    assert_eq!(
+        deserialized.custom_icons.get("/tmp/folder"),
+        Some(&crate::assets::icons::PICTURES.to_owned())
+    );
+    assert_eq!(
+        deserialized.custom_icons.get("/tmp/file.txt"),
+        Some(&"emoji:🚀".to_owned())
+    );
 }

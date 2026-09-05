@@ -2,6 +2,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
     rc::Rc,
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sourceview5::prelude::BufferExt as _;
 
 use crate::{
-    model::{SortDirection, SortKey, ViewPreferences},
+    model::{FolderColorValue, SortDirection, SortKey, ViewPreferences},
     sandbox::MediaPreviewBackend,
     services::Channel,
 };
@@ -23,6 +24,9 @@ thread_local! {
     static SOURCE_STYLE_PATH_INSTALLED: Cell<bool> = const { Cell::new(false) };
     static SOURCE_BUFFERS: RefCell<Vec<glib::WeakRef<sourceview5::Buffer>>> = const { RefCell::new(Vec::new()) };
     static CHANNEL_LISTENERS: RefCell<Vec<ChannelListener>> = const { RefCell::new(Vec::new()) };
+    /// Installed on the first source preview buffer, so startup performs no SourceView I/O.
+    static PENDING_STYLE_TOKENS: RefCell<Option<ThemeTokens>> = const { RefCell::new(None) };
+    static STYLE_SCHEME_DIRTY: Cell<bool> = const { Cell::new(true) };
 }
 
 struct ChannelListener {
@@ -106,11 +110,15 @@ struct Preferences {
     #[serde(default)]
     search_open_files_directly: bool,
     #[serde(default)]
+    type_to_search: bool,
+    #[serde(default)]
     reduce_motion: bool,
     #[serde(default = "default_browser_mode")]
     browser_mode: String,
     #[serde(default = "default_browser_density")]
     browser_density: String,
+    #[serde(default)]
+    group_by_type: bool,
     #[serde(default = "default_file_clicks")]
     list_file_clicks: u8,
     #[serde(default = "default_folder_clicks")]
@@ -127,6 +135,8 @@ struct Preferences {
     sidebar_order: Vec<String>,
     #[serde(default)]
     show_hidden: bool,
+    #[serde(default = "default_text_size")]
+    text_size: String,
     #[serde(default = "default_enabled")]
     folders_first: bool,
     #[serde(default = "default_sort_key")]
@@ -143,6 +153,10 @@ struct Preferences {
     auto_refresh_interval: u32,
     #[serde(default = "default_release_channel")]
     release_channel: String,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    folder_colors: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    custom_icons: HashMap<String, String>,
 }
 
 impl Default for Preferences {
@@ -155,9 +169,11 @@ impl Default for Preferences {
             hardware_accelerated_video_previews: None,
             video_preview_backend: default_video_preview_backend(),
             search_open_files_directly: false,
+            type_to_search: false,
             reduce_motion: false,
             browser_mode: default_browser_mode(),
             browser_density: default_browser_density(),
+            group_by_type: false,
             list_file_clicks: default_file_clicks(),
             list_folder_clicks: default_folder_clicks(),
             grid_file_clicks: default_file_clicks(),
@@ -166,6 +182,7 @@ impl Default for Preferences {
             explorer_folder_clicks: default_double_clicks(),
             sidebar_order: default_sidebar_order(),
             show_hidden: false,
+            text_size: default_text_size(),
             folders_first: true,
             sort_key: default_sort_key(),
             sort_direction: default_sort_direction(),
@@ -174,6 +191,8 @@ impl Default for Preferences {
             preview_volume: default_full_volume(),
             auto_refresh_interval: 0,
             release_channel: default_release_channel(),
+            folder_colors: HashMap::new(),
+            custom_icons: HashMap::new(),
         }
     }
 }
@@ -184,6 +203,47 @@ fn default_enabled() -> bool {
 
 fn default_release_channel() -> String {
     "stable".to_owned()
+}
+
+fn default_text_size() -> String {
+    TextSize::default().as_str().to_owned()
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextSize {
+    Small,
+    #[default]
+    Medium,
+    Large,
+}
+
+impl TextSize {
+    /// The persisted/config-file representation of this size.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TextSize::Small => "small",
+            TextSize::Medium => "medium",
+            TextSize::Large => "large",
+        }
+    }
+
+    /// Parses a persisted text size value, falling back to [`TextSize::Medium`]
+    /// for anything unrecognised.
+    pub fn parse(value: &str) -> TextSize {
+        match value {
+            "small" => TextSize::Small,
+            "large" => TextSize::Large,
+            _ => TextSize::Medium,
+        }
+    }
+
+    fn root_font_px(self) -> u32 {
+        match self {
+            TextSize::Small => 11,
+            TextSize::Medium => 13,
+            TextSize::Large => 15,
+        }
+    }
 }
 
 fn default_browser_mode() -> String {
@@ -308,6 +368,81 @@ impl ThemeManager {
         self.save_preferences();
     }
 
+    pub fn folder_color(&self, path: &Path) -> Option<FolderColorValue> {
+        let preferences = self.preferences.borrow();
+        if preferences.folder_colors.is_empty() {
+            return None;
+        }
+        let key = path.to_string_lossy();
+        let color_name = preferences.folder_colors.get(key.as_ref())?;
+        FolderColorValue::parse(color_name)
+    }
+
+    pub fn set_folder_color(&self, path: &Path, color: Option<FolderColorValue>) {
+        self.set_folder_colors(&[path.to_path_buf()], color);
+    }
+
+    pub fn set_folder_colors(&self, paths: &[PathBuf], color: Option<FolderColorValue>) {
+        if paths.is_empty() {
+            return;
+        }
+        {
+            let mut preferences = self.preferences.borrow_mut();
+            for path in paths {
+                let key = path.to_string_lossy().into_owned();
+                if let Some(color) = &color {
+                    preferences
+                        .folder_colors
+                        .insert(key, color.to_preference_string());
+                } else {
+                    preferences.folder_colors.remove(&key);
+                }
+            }
+        }
+        self.save_preferences();
+        super::thumbnail::refresh_customized_icons(paths);
+    }
+
+    pub fn custom_icon(&self, path: &Path) -> Option<String> {
+        let preferences = self.preferences.borrow();
+        if preferences.custom_icons.is_empty() {
+            return None;
+        }
+        let key = path.to_string_lossy();
+        preferences
+            .custom_icons
+            .get(key.as_ref())
+            .filter(|name| crate::assets::icons::is_customization_choice(name))
+            .cloned()
+    }
+
+    pub fn set_custom_icon(&self, path: &Path, icon_name: Option<&str>) {
+        {
+            let mut preferences = self.preferences.borrow_mut();
+            let key = path.to_string_lossy().into_owned();
+            if let Some(name) =
+                icon_name.filter(|name| crate::assets::icons::is_customization_choice(name))
+            {
+                preferences.custom_icons.insert(key, name.to_owned());
+            } else {
+                preferences.custom_icons.remove(&key);
+            }
+        }
+        self.save_preferences();
+        super::thumbnail::refresh_customized_icons(&[path.to_path_buf()]);
+    }
+
+    pub fn clear_item_customization(&self, path: &Path) {
+        {
+            let mut preferences = self.preferences.borrow_mut();
+            let key = path.to_string_lossy();
+            preferences.folder_colors.remove(key.as_ref());
+            preferences.custom_icons.remove(key.as_ref());
+        }
+        self.save_preferences();
+        super::thumbnail::refresh_customized_icons(&[path.to_path_buf()]);
+    }
+
     pub fn single_click_previews(&self) -> bool {
         self.preferences.borrow().single_click_previews
     }
@@ -360,6 +495,15 @@ impl ThemeManager {
 
     pub fn set_search_open_files_directly(&self, enabled: bool) {
         self.preferences.borrow_mut().search_open_files_directly = enabled;
+        self.save_preferences();
+    }
+
+    pub fn type_to_search(&self) -> bool {
+        self.preferences.borrow().type_to_search
+    }
+
+    pub fn set_type_to_search(&self, enabled: bool) {
+        self.preferences.borrow_mut().type_to_search = enabled;
         self.save_preferences();
     }
 
@@ -467,6 +611,25 @@ impl ThemeManager {
             super::browser_modes::BrowserDensity::Airy => "airy",
         }
         .to_owned();
+        self.save_preferences();
+    }
+
+    pub fn text_size(&self) -> TextSize {
+        TextSize::parse(&self.preferences.borrow().text_size)
+    }
+
+    pub fn set_text_size(&self, size: TextSize) {
+        self.preferences.borrow_mut().text_size = size.as_str().to_owned();
+        self.apply_selected();
+        self.save_preferences();
+    }
+
+    pub fn group_by_type(&self) -> bool {
+        self.preferences.borrow().group_by_type
+    }
+
+    pub fn set_group_by_type(&self, enabled: bool) {
+        self.preferences.borrow_mut().group_by_type = enabled;
         self.save_preferences();
     }
 
@@ -670,10 +833,12 @@ impl ThemeManager {
     }
 
     fn apply_tokens(&self, tokens: &ThemeTokens) {
-        self.provider.load_from_string(&tokens_css(tokens));
+        self.provider
+            .load_from_string(&tokens_css(tokens, self.text_size().root_font_px()));
         crate::assets::set_primary_icon_color(&tokens.accent);
         crate::assets::set_danger_icon_color(&tokens.danger);
-        install_source_style_scheme(tokens);
+        super::thumbnail::refresh_all_customized_icons();
+        stage_source_style_scheme(tokens);
     }
 
     fn save_preferences(&self) {
@@ -917,6 +1082,7 @@ fn source_style_scheme() -> Option<sourceview5::StyleScheme> {
 }
 
 pub(super) fn register_source_buffer(buffer: &sourceview5::Buffer) {
+    ensure_source_style_scheme_installed();
     buffer.set_style_scheme(source_style_scheme().as_ref());
     SOURCE_BUFFERS.with(|buffers| {
         let mut buffers = buffers.borrow_mut();
@@ -927,10 +1093,32 @@ pub(super) fn register_source_buffer(buffer: &sourceview5::Buffer) {
     });
 }
 
-fn install_source_style_scheme(tokens: &ThemeTokens) {
+fn stage_source_style_scheme(tokens: &ThemeTokens) {
+    PENDING_STYLE_TOKENS.with(|pending| pending.replace(Some(tokens.clone())));
+    STYLE_SCHEME_DIRTY.with(|dirty| dirty.set(true));
+    let live = SOURCE_BUFFERS.with(|buffers| {
+        buffers
+            .borrow_mut()
+            .retain(|buffer| buffer.upgrade().is_some());
+        !buffers.borrow().is_empty()
+    });
+    if live {
+        ensure_source_style_scheme_installed();
+    }
+}
+
+/// Writes the staged scheme and rescans the style manager, once per staged token set.
+fn ensure_source_style_scheme_installed() {
+    if !STYLE_SCHEME_DIRTY.with(|dirty| dirty.get()) {
+        return;
+    }
+    let pending = PENDING_STYLE_TOKENS.with(|pending| pending.borrow().clone());
+    let Some(tokens) = pending else {
+        return;
+    };
     let directory = glib::user_cache_dir().join("strata").join("source-styles");
     if let Err(error) = fs::create_dir_all(&directory).and_then(|()| {
-        let value = source_style_scheme_xml(tokens);
+        let value = source_style_scheme_xml(&tokens);
         crate::storage::atomic_write(&directory.join("strata-current.xml"), value.as_bytes())
     }) {
         tracing::warn!(%error, "unable to write preview syntax style");
@@ -944,6 +1132,7 @@ fn install_source_style_scheme(tokens: &ThemeTokens) {
         }
     });
     manager.force_rescan();
+    STYLE_SCHEME_DIRTY.with(|dirty| dirty.set(false));
     let scheme = manager.scheme("strata-current");
     SOURCE_BUFFERS.with(|buffers| {
         buffers.borrow_mut().retain(|buffer| {
@@ -1003,9 +1192,9 @@ fn source_style_scheme_xml(tokens: &ThemeTokens) -> String {
     )
 }
 
-fn tokens_css(tokens: &ThemeTokens) -> String {
+fn tokens_css(tokens: &ThemeTokens, root_font_px: u32) -> String {
     format!(
-        "@define-color theme_bg {};\n@define-color theme_surface {};\n@define-color theme_text {};\n@define-color theme_accent {};\n@define-color theme_danger {};\n@define-color theme_muted {};\n@define-color theme_highlight {};\n@define-color theme_border {};\n@define-color theme_dim_text {};\n",
+        "@define-color theme_bg {};\n@define-color theme_surface {};\n@define-color theme_text {};\n@define-color theme_accent {};\n@define-color theme_danger {};\n@define-color theme_muted {};\n@define-color theme_highlight {};\n@define-color theme_border {};\n@define-color theme_dim_text {};\nwindow {{ font-size: {root_font_px}px; }}\n",
         tokens.background,
         tokens.surface,
         tokens.text,

@@ -4,18 +4,18 @@ use std::{
     cell::{Cell, RefCell},
     process::{Command, Stdio},
     rc::Rc,
-    sync::mpsc::TryRecvError,
-    time::Duration,
+    sync::{OnceLock, mpsc::TryRecvError},
+    time::{Duration, Instant},
 };
 
-use gtk::{gdk, glib, prelude::*, subclass::prelude::*};
+use gtk::{gdk, gio, glib, prelude::*, subclass::prelude::*};
 
 use crate::{
     assets::icons,
     sandbox::MediaPreviewBackend,
     services::{
-        self, BuildKind, Channel, InstallRequest, ReleaseMetadata, ReleaseNoteBlock, ReleaseNotes,
-        UpdateCheck, UpdateInstall, UpdateMethod, Version,
+        self, BuildKind, Channel, InstallRequest, InstallSource, ManagedInstall, ReleaseMetadata,
+        ReleaseNoteBlock, ReleaseNotes, UpdateCheck, UpdateInstall, UpdateMethod, Version,
     },
 };
 
@@ -27,7 +27,7 @@ use super::{
     browser::{BrowserView, dismiss_modal_layer, modal_layer},
     browser_modes::{BrowserMode, ClickActivation, ClickCount},
     controls::{form_entry, menu_option, modal_layout, segmented_control},
-    theme::{Theme, ThemeManager, ThemeTokens},
+    theme::{TextSize, Theme, ThemeManager, ThemeTokens},
 };
 
 type ThemeCards = Rc<RefCell<Vec<(String, gtk::Button, gtk::Image)>>>;
@@ -76,13 +76,117 @@ thread_local! {
 /// deliberately never released: it is one `bool`, and the guard's
 /// correctness should not depend on some window or in-flight install
 /// happening to still hold a strong reference.
-///
-/// This bounds races to *this* process. A second `strata` process can
-/// still install over the same executable, but `update_install` stages
-/// into a unique path and lands it with a single atomic rename, so that
-/// case degrades to last-writer-wins rather than a corrupted binary.
 pub(super) fn install_guard() -> InstallGuard {
-    INSTALL_GUARD.with(Rc::clone)
+    INSTALL_GUARD.with(|guard| guard.clone())
+}
+
+thread_local! {
+    /// Shared by the due scheduler so every window uses one TTL.
+    static LAST_COMPLETED_CHECK: Cell<Option<Instant>> = const { Cell::new(None) };
+    static CHECK_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Detection spawns a package-manager child, so it resolves asynchronously
+/// on first need, never during startup.
+static UPDATE_METHOD_CACHE: OnceLock<UpdateMethod> = OnceLock::new();
+
+/// Invokes `callback` on the GTK thread, detecting on a worker thread on a cache miss.
+pub(super) fn resolve_update_method_async(callback: impl FnOnce(UpdateMethod) + 'static) {
+    if let Some(method) = UPDATE_METHOD_CACHE.get().copied() {
+        callback(method);
+        return;
+    }
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("strata-update-method".into())
+        .spawn(move || {
+            let method = *UPDATE_METHOD_CACHE.get_or_init(services::update_method);
+            let _sent = sender.send(method);
+        });
+    if spawned.is_err() {
+        let method = *UPDATE_METHOD_CACHE.get_or_init(services::update_method);
+        callback(method);
+        return;
+    }
+    let mut callback = Some(callback);
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        match receiver.try_recv() {
+            Err(TryRecvError::Empty) => glib::ControlFlow::Continue,
+            resolved => {
+                let method = match resolved {
+                    Ok(method) => method,
+                    Err(TryRecvError::Disconnected) => {
+                        *UPDATE_METHOD_CACHE.get_or_init(services::update_method)
+                    }
+                    Err(TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                };
+                if let Some(callback) = callback.take() {
+                    callback(method);
+                }
+                glib::ControlFlow::Break
+            }
+        }
+    });
+}
+const UPDATE_DUE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+
+fn update_check_due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|completed| now.duration_since(completed) >= UPDATE_DUE_INTERVAL)
+}
+
+fn force_due_update_check(last: Option<Instant>) -> bool {
+    last.is_none()
+}
+
+pub(super) fn maybe_run_due_update_check(manager: &Rc<ThemeManager>, notice: &UpdateNoticeHandler) {
+    if !manager.checks_for_updates() || CHECK_IN_FLIGHT.get() {
+        return;
+    }
+    let last_completed = LAST_COMPLETED_CHECK.get();
+    if !update_check_due(last_completed, Instant::now()) {
+        return;
+    }
+    let force = force_due_update_check(last_completed);
+    CHECK_IN_FLIGHT.set(true);
+    let channel = manager.release_channel();
+    let weak_manager = Rc::downgrade(manager);
+    let notice = notice.clone();
+    resolve_update_method_async(move |method| {
+        let receiver = services::check_for_updates(
+            channel,
+            crate::build_info::installed_version(),
+            method,
+            force,
+        );
+        glib::timeout_add_local(Duration::from_millis(100), move || {
+            match receiver.try_recv() {
+                Err(TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(TryRecvError::Disconnected) => {
+                    CHECK_IN_FLIGHT.set(false);
+                    glib::ControlFlow::Break
+                }
+                Ok(UpdateCheck::Available {
+                    release,
+                    download_url,
+                }) => {
+                    CHECK_IN_FLIGHT.set(false);
+                    LAST_COMPLETED_CHECK.set(Some(Instant::now()));
+                    if weak_manager.upgrade().is_some_and(|manager| {
+                        manager.checks_for_updates() && manager.release_channel() == channel
+                    }) {
+                        notice(Some((release, download_url, method)));
+                    }
+                    glib::ControlFlow::Break
+                }
+                Ok(_) => {
+                    // Failed stays uncached so the next launch retries on transient errors.
+                    CHECK_IN_FLIGHT.set(false);
+                    LAST_COMPLETED_CHECK.set(Some(Instant::now()));
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    });
 }
 
 const DIALOG_WIDTH: i32 = 920;
@@ -237,6 +341,26 @@ impl ResponsiveBin {
         child.set_parent(&bin);
         bin
     }
+
+    fn add_navigation(&self, label: gtk::Label, content: gtk::Box) {
+        let imp = self.imp();
+        imp.navigation_labels.borrow_mut().push(label);
+        imp.navigation_contents.borrow_mut().push(content);
+    }
+
+    fn add_flow(&self, flow: gtk::FlowBox, columns: u32) {
+        self.imp()
+            .responsive_flows
+            .borrow_mut()
+            .push((flow, columns));
+    }
+
+    fn add_action(&self, row: gtk::Box, button: gtk::Button) {
+        self.imp()
+            .responsive_actions
+            .borrow_mut()
+            .push((row, button));
+    }
 }
 
 fn responsive_dialog_size(width: i32, height: i32) -> (i32, i32) {
@@ -310,17 +434,45 @@ pub fn build_layer(
     let (general, responsive_setting_rows, responsive_activation_rows) =
         general_page(browser, themes.clone());
     stack.add_named(&general, Some("general"));
-    let (updates, responsive_actions) = updates_page(themes.clone(), update_notice, install_guard);
-    stack.add_named(&updates, Some("updates"));
     stack.add_named(&keybindings_page(), Some("keybindings"));
-    let (theme_page, responsive_flows) = theme_page(themes);
-    stack.add_named(&theme_page, Some("theme"));
     stack.add_named(&about_page(), Some("about"));
+    // Heavy pages build on first selection, never during startup: the
+    // Updates page spawns package-manager detection plus release-note
+    // network work, and the theme page builds its swatch flows.
+    let updates_container = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    updates_container.set_hexpand(true);
+    updates_container.set_vexpand(true);
+    let updates_spinner = gtk::Spinner::new();
+    updates_spinner.start();
+    updates_spinner.set_halign(gtk::Align::Center);
+    updates_spinner.set_valign(gtk::Align::Center);
+    updates_spinner.set_vexpand(true);
+    updates_container.append(&updates_spinner);
+    stack.add_named(&updates_container, Some("updates"));
     page.append(&stack);
 
+    // Created before the navigation loop so lazy builders can register
+    // their responsive rows and flows as pages materialize.
+    let responsive_panel = ResponsiveBin::new(
+        &panel,
+        &navigation,
+        &navigation_heading,
+        Vec::new(),
+        Vec::new(),
+        ResponsiveContent {
+            flows: Vec::new(),
+            actions: Vec::new(),
+            setting_rows: responsive_setting_rows,
+            activation_rows: responsive_activation_rows,
+        },
+    );
+    // Navigation entries register as their buttons are created, so the
+    // responsive panel compacts correctly even with lazy pages.
+    let responsive_for_nav = responsive_panel.clone();
+    let built: Rc<RefCell<std::collections::HashSet<&'static str>>> = Rc::new(RefCell::new(
+        ["general", "keybindings", "about"].into_iter().collect(),
+    ));
     let nav_buttons: Rc<RefCell<Vec<gtk::Button>>> = Rc::new(RefCell::new(Vec::new()));
-    let mut navigation_labels = Vec::new();
-    let mut navigation_contents = Vec::new();
     for (label, icon, name) in [
         ("General", icons::SLIDERS, "general"),
         ("Keybindings", icons::KEYBOARD, "keybindings"),
@@ -330,8 +482,7 @@ pub fn build_layer(
     ] {
         let active = name == "general";
         let (button, navigation_label, navigation_content) = navigation_button(icon, label);
-        navigation_labels.push(navigation_label);
-        navigation_contents.push(navigation_content);
+        responsive_for_nav.add_navigation(navigation_label, navigation_content);
         if active {
             button.add_css_class("settings-nav-active");
         }
@@ -340,12 +491,49 @@ pub fn build_layer(
         let stack = stack.clone();
         let title = title.clone();
         let page_title = label.to_owned();
+        let built = built.clone();
+        let themes = themes.clone();
+        let update_notice = update_notice.clone();
+        let install_guard = install_guard.clone();
+        let updates_container = updates_container.clone();
+        let responsive_panel = responsive_panel.clone();
         button.connect_clicked(move |clicked| {
             for candidate in buttons.borrow().iter() {
                 if candidate == clicked {
                     candidate.add_css_class("settings-nav-active");
                 } else {
                     candidate.remove_css_class("settings-nav-active");
+                }
+            }
+            if built.borrow_mut().insert(name) {
+                match name {
+                    "theme" => {
+                        let (theme_widget, flows) = theme_page(themes.clone());
+                        stack.add_named(&theme_widget, Some("theme"));
+                        for (flow, columns) in flows {
+                            responsive_panel.add_flow(flow, columns);
+                        }
+                    }
+                    "updates" => {
+                        let container = updates_container.clone();
+                        let panel = responsive_panel.clone();
+                        let themes = themes.clone();
+                        let update_notice = update_notice.clone();
+                        let install_guard = install_guard.clone();
+                        let _ = stack;
+                        resolve_update_method_async(move |method| {
+                            let (updates, actions) =
+                                updates_page(themes, update_notice, install_guard, method);
+                            while let Some(child) = container.first_child() {
+                                container.remove(&child);
+                            }
+                            container.append(&updates);
+                            for (row, button) in actions {
+                                panel.add_action(row, button);
+                            }
+                        });
+                    }
+                    _ => {}
                 }
             }
             stack.set_visible_child_name(name);
@@ -356,19 +544,6 @@ pub fn build_layer(
 
     panel.append(&navigation);
     panel.append(&page);
-    let responsive_panel = ResponsiveBin::new(
-        &panel,
-        &navigation,
-        &navigation_heading,
-        navigation_labels,
-        navigation_contents,
-        ResponsiveContent {
-            flows: responsive_flows,
-            actions: responsive_actions,
-            setting_rows: responsive_setting_rows,
-            activation_rows: responsive_activation_rows,
-        },
-    );
     responsive_panel.set_hexpand(false);
     responsive_panel.set_vexpand(false);
     let top = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -496,6 +671,18 @@ fn general_page(
     });
     preferences.append(&search_open_row);
 
+    let type_to_search_enabled = manager.type_to_search();
+    let (type_to_search_row, type_to_search) = settings_option(
+        "Type to search",
+        "Start filtering the active pane when you type in the file browser.",
+        type_to_search_enabled,
+    );
+    let manager_for_type_to_search = manager.clone();
+    type_to_search.connect_active_notify(move |toggle| {
+        manager_for_type_to_search.set_type_to_search(toggle.is_active());
+    });
+    preferences.append(&type_to_search_row);
+
     append_heading(&preferences, "REFRESH");
     let interval = manager.auto_refresh_interval();
     let options = ["Off", "1 min", "5 min", "10 min"];
@@ -614,15 +801,19 @@ fn updates_page(
     manager: Rc<ThemeManager>,
     update_notice: UpdateNoticeHandler,
     install_guard: InstallGuard,
+    update_method: UpdateMethod,
 ) -> (gtk::Widget, Vec<(gtk::Box, gtk::Button)>) {
     let preferences = page_content();
     append_heading(&preferences, "UPDATE PREFERENCES");
+    let managed = InstallSource::detect().managed();
+    if let Some(managed) = managed {
+        preferences.append(&managed_install_row(managed));
+    }
 
     let available_notes = release_notes_card(
         "Available release",
         "Check for updates to see the latest release notes.",
     );
-    let update_method = services::update_method();
     let UpdateCheckRow {
         row: update_row,
         run_check,
@@ -641,6 +832,7 @@ fn updates_page(
         "Automatically check for updates",
         match update_method {
             UpdateMethod::InPlace => "Check GitHub for a newer release when Strata starts.",
+            UpdateMethod::Aur => "Check the AUR for a newer packaged release when Strata starts.",
             UpdateMethod::Omarchy => {
                 "Check the Omarchy package repository for a newer release when Strata starts."
             }
@@ -652,9 +844,9 @@ fn updates_page(
     );
     preferences.append(&auto_check_row);
 
-    let (channel_row, sync_channel_selection) = channel_option(manager.clone());
+    let (channel_row, sync_channel_selection) = channel_option(manager.clone(), managed);
     channel_row.set_sensitive(auto_check_enabled);
-    channel_row.set_visible(!update_method.is_package_managed());
+    channel_row.set_visible(managed.is_some() || !update_method.is_package_managed());
     preferences.append(&channel_row);
     preferences.append(&update_row);
 
@@ -681,9 +873,7 @@ fn updates_page(
             update_notice(None);
         }
     });
-    if auto_check_enabled {
-        run_check(false);
-    }
+    // No automatic check here: the due scheduler owns background checks process-wide.
 
     let page = scrollable_page(&preferences, None);
     let broadcast_check = run_check.clone();
@@ -702,7 +892,10 @@ fn updates_page(
 const RELEASE_CHANNEL_TITLE: &str = "Release channel";
 const RELEASE_CHANNEL_DESCRIPTION: &str = "Preview receives alpha, beta, and release-candidate builds. Nightly also receives daily development builds.";
 
-fn channel_option(manager: Rc<ThemeManager>) -> (gtk::Box, Rc<dyn Fn()>) {
+fn channel_option(
+    manager: Rc<ThemeManager>,
+    managed: Option<&ManagedInstall>,
+) -> (gtk::Box, Rc<dyn Fn()>) {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 12);
     row.add_css_class("settings-option");
 
@@ -710,7 +903,14 @@ fn channel_option(manager: Rc<ThemeManager>) -> (gtk::Box, Rc<dyn Fn()>) {
     let title = gtk::Label::new(Some(RELEASE_CHANNEL_TITLE));
     title.set_xalign(0.0);
     title.add_css_class("settings-option-title");
-    let description = gtk::Label::new(Some(RELEASE_CHANNEL_DESCRIPTION));
+    let locked_channel = managed.and_then(ManagedInstall::tracked_channel);
+    if let Some(channel) = locked_channel {
+        manager.set_release_channel(channel);
+    }
+    let description = gtk::Label::new(Some(&match managed {
+        Some(managed) => managed_channel_description(managed),
+        None => RELEASE_CHANNEL_DESCRIPTION.to_owned(),
+    }));
     description.set_xalign(0.0);
     description.set_wrap(true);
     description.add_css_class("settings-option-description");
@@ -732,6 +932,7 @@ fn channel_option(manager: Rc<ThemeManager>) -> (gtk::Box, Rc<dyn Fn()>) {
             }
         });
     }
+    control.set_sensitive(managed.is_none());
     row.append(&control);
 
     let sync = {
@@ -759,6 +960,17 @@ fn channel_index(channel: Channel) -> usize {
         Channel::Stable => 0,
         Channel::Preview => 1,
         Channel::Nightly => 2,
+    }
+}
+
+fn managed_channel_description(managed: &ManagedInstall) -> String {
+    let tracked = match managed.channel() {
+        Some(channel) => format!("This install tracks the {channel} release channel."),
+        None => "The installed package decides the release channel.".to_owned(),
+    };
+    match managed.alternate_instruction() {
+        Some(alternate) => format!("{tracked} {alternate}"),
+        None => tracked,
     }
 }
 
@@ -959,6 +1171,32 @@ fn load_current_release_notes(card: &ReleaseNotesCard) {
 /// fetch in flight when the user flips back to Stable could still offer an
 /// RC to a Stable user: the result carries no channel of its own, so
 /// nothing but generation order distinguishes it from a current one.
+fn managed_install_row(managed: &ManagedInstall) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    row.add_css_class("settings-option");
+    let title = gtk::Label::new(Some("Package-managed installation"));
+    title.set_xalign(0.0);
+    title.add_css_class("settings-option-title");
+    let description = gtk::Label::new(Some(&managed_install_summary(managed)));
+    description.set_xalign(0.0);
+    description.set_wrap(true);
+    description.set_selectable(true);
+    description.add_css_class("settings-option-description");
+    row.append(&title);
+    row.append(&description);
+    row
+}
+
+fn managed_install_summary(managed: &ManagedInstall) -> String {
+    let mut lines = vec![managed.ownership_summary()];
+    if let Some(channel) = managed.channel() {
+        lines.push(format!("Tracking the {channel} release channel."));
+    }
+    lines.push(managed.update_instruction());
+    lines.extend(managed.alternate_instruction());
+    lines.join("\n")
+}
+
 fn is_stale_check(result_generation: u64, current_generation: u64) -> bool {
     result_generation != current_generation
 }
@@ -990,10 +1228,9 @@ struct PendingInstall {
 /// makes the preference authoritative regardless of how many views cached
 /// an offer under the old one.
 fn effective_update_channel(selected: Channel, update_method: UpdateMethod) -> Channel {
-    if update_method.is_package_managed() {
-        Channel::Stable
-    } else {
-        selected
+    match update_method {
+        UpdateMethod::InPlace | UpdateMethod::Aur => selected,
+        UpdateMethod::Omarchy | UpdateMethod::Pacman => Channel::Stable,
     }
 }
 
@@ -1142,17 +1379,25 @@ fn update_check_row(
                                     && crate::build_info::build_kind() != BuildKind::Stable
                                     && release.kind == BuildKind::Stable
                         );
-                        if returns_to_stable && !update_method.is_package_managed() {
-                            if let UpdateCheck::Available { release, .. } = &result {
-                                status.set_markup(&format!(
-                                    "Stable channel target: <a href=\"{}\">v{}</a>",
-                                    glib::markup_escape_text(&release.url),
-                                    glib::markup_escape_text(&release.version),
-                                ));
-                            }
+                        let message = if returns_to_stable
+                            && matches!(update_method, UpdateMethod::InPlace | UpdateMethod::Aur)
+                        {
+                            let UpdateCheck::Available { release, .. } = &result else {
+                                unreachable!();
+                            };
+                            format!(
+                                "Stable channel target: <a href=\"{}\">v{}</a>",
+                                glib::markup_escape_text(&release.url),
+                                glib::markup_escape_text(&release.version),
+                            )
                         } else {
-                            status.set_markup(&update_check_message(&result, update_method));
-                        }
+                            update_check_message(&result, update_method)
+                        };
+                        status.set_markup(&update_status_markup(
+                            message,
+                            &result,
+                            InstallSource::detect(),
+                        ));
                         available_notes
                             .container
                             .set_visible(shows_available_release_notes(&result));
@@ -1176,6 +1421,7 @@ fn update_check_row(
                                 if update_method.is_package_managed() {
                                     managed_update_available.set(true);
                                     button.set_label(match update_method {
+                                        UpdateMethod::Aur => aur_update_action_label(),
                                         UpdateMethod::Omarchy => "Open Omarchy Update",
                                         UpdateMethod::Pacman => "Check again",
                                         UpdateMethod::InPlace => unreachable!(),
@@ -1218,6 +1464,13 @@ fn update_check_row(
 
     let clicked_check = run_check.clone();
     button.connect_clicked(move |button| {
+        if update_method == UpdateMethod::Aur && managed_update_available.get() {
+            match launch_aur_update() {
+                Ok(message) => status.set_text(message),
+                Err(error) => status.set_text(&format!("Couldn’t open AUR update: {error}")),
+            }
+            return;
+        }
         if update_method == UpdateMethod::Omarchy && managed_update_available.get() {
             match launch_omarchy_update() {
                 Ok(()) => status.set_text("Omarchy Update opened in your terminal."),
@@ -1529,6 +1782,7 @@ pub(super) fn show_update_dialog(
         root.set_blurred(true);
     }
 
+    let aur_action = aur_update_action_label();
     let layout = modal_layout(
         icons::DOWNLOADS,
         &format!("Strata v{} is available", release.version),
@@ -1539,6 +1793,7 @@ pub(super) fn show_update_dialog(
         ),
         match update_method {
             UpdateMethod::InPlace => "Download update",
+            UpdateMethod::Aur => aur_action,
             UpdateMethod::Omarchy => "Open Omarchy Update",
             UpdateMethod::Pacman => "Close",
         },
@@ -1581,15 +1836,24 @@ pub(super) fn show_update_dialog(
     let fallback = gtk::LinkButton::with_label(&release.url, "View release on GitHub");
     fallback.add_css_class("release-notes-fallback");
     fallback.set_halign(gtk::Align::Start);
-    let status = gtk::Label::new(Some(match update_method {
-        UpdateMethod::InPlace => "Review the release notes before downloading the update.",
+    let status_message = match update_method {
+        UpdateMethod::InPlace => {
+            "Review the release notes before downloading the update.".to_owned()
+        }
+        UpdateMethod::Aur => InstallSource::detect()
+            .managed()
+            .map(update_dialog_status)
+            .unwrap_or_else(|| "This installation is managed by its package manager.".to_owned()),
         UpdateMethod::Omarchy => {
             "This installation is managed by Omarchy. Run “omarchy update” to install it."
+                .to_owned()
         }
         UpdateMethod::Pacman => {
             "This installation is managed by pacman. Install it through a full system update."
+                .to_owned()
         }
-    }));
+    };
+    let status = gtk::Label::new(Some(&status_message));
     status.add_css_class("update-dialog-status");
     status.set_xalign(0.0);
     status.set_wrap(true);
@@ -1684,6 +1948,21 @@ pub(super) fn show_update_dialog(
     let application = parent.application();
     let action_close = close.clone();
     action.connect_clicked(move |button| {
+        if update_method == UpdateMethod::Aur {
+            if aur_action == "Close" {
+                dismiss_modal_layer(&action_layer, &action_overlay, action_root.as_ref());
+                button.set_sensitive(false);
+                return;
+            }
+            match launch_aur_update() {
+                Ok(_) => {
+                    dismiss_modal_layer(&action_layer, &action_overlay, action_root.as_ref());
+                    button.set_sensitive(false);
+                }
+                Err(error) => status.set_text(&format!("Couldn’t open AUR update: {error}")),
+            }
+            return;
+        }
         if update_method == UpdateMethod::Omarchy {
             match launch_omarchy_update() {
                 Ok(()) => {
@@ -1808,6 +2087,43 @@ pub(super) fn show_update_dialog(
     });
 }
 
+fn aur_update_action_label() -> &'static str {
+    match InstallSource::detect().managed() {
+        Some(managed) if managed.aur_update_target().is_some() => "Open AUR Update",
+        Some(managed) if managed.package().is_some() => "View on AUR",
+        _ => "Close",
+    }
+}
+
+fn aur_update_command(helper: &str, package: &str) -> Command {
+    let mut command = Command::new("xdg-terminal-exec");
+    command
+        .args(["--", helper, "-Syu", package])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+fn launch_aur_update() -> Result<&'static str, String> {
+    let managed = InstallSource::detect()
+        .managed()
+        .ok_or_else(|| "missing package metadata".to_owned())?;
+    if let Some((helper, package)) = managed.aur_update_target() {
+        return aur_update_command(helper, package)
+            .spawn()
+            .map(|_child| "AUR update opened in your terminal.")
+            .map_err(|error| error.to_string());
+    }
+    let package = managed
+        .package()
+        .ok_or_else(|| "missing AUR package name".to_owned())?;
+    let uri = format!("https://aur.archlinux.org/packages/{package}");
+    gio::AppInfo::launch_default_for_uri(&uri, None::<&gio::AppLaunchContext>)
+        .map(|()| "AUR package page opened.")
+        .map_err(|error| error.to_string())
+}
+
 fn omarchy_update_command() -> Command {
     let mut command = Command::new("xdg-terminal-exec");
     command
@@ -1891,9 +2207,34 @@ fn installed_version_status(
     };
     match update_method {
         UpdateMethod::InPlace => version,
+        UpdateMethod::Aur => format!(
+            "{version} · Managed by {}",
+            InstallSource::detect()
+                .managed()
+                .map(ManagedInstall::manager)
+                .unwrap_or("a package manager")
+        ),
         UpdateMethod::Omarchy => format!("{version} · Managed by Omarchy"),
         UpdateMethod::Pacman => format!("{version} · Managed by pacman"),
     }
+}
+
+fn update_status_markup(message: String, result: &UpdateCheck, source: &InstallSource) -> String {
+    match (source.managed(), result) {
+        (Some(managed), UpdateCheck::Available { .. }) => format!(
+            "{message}\n{}",
+            glib::markup_escape_text(&managed.update_instruction())
+        ),
+        _ => message,
+    }
+}
+
+fn update_dialog_status(managed: &ManagedInstall) -> String {
+    format!(
+        "{} {}",
+        managed.ownership_summary(),
+        managed.update_instruction()
+    )
 }
 
 fn update_check_message(result: &UpdateCheck, update_method: UpdateMethod) -> String {
@@ -1906,7 +2247,7 @@ fn update_check_message(result: &UpdateCheck, update_method: UpdateMethod) -> St
         }
         UpdateCheck::Available { release, .. } => {
             let instruction = match update_method {
-                UpdateMethod::InPlace => "",
+                UpdateMethod::InPlace | UpdateMethod::Aur => "",
                 UpdateMethod::Omarchy => " · Run “omarchy update” to install",
                 UpdateMethod::Pacman => " · Install through a full system update",
             };
@@ -1936,6 +2277,9 @@ fn keybindings_page() -> gtk::Widget {
     ] {
         append_keybinding(&content, label, keys);
     }
+
+    append_heading(&content, "VIEW");
+    append_keybinding(&content, "Toggle hidden files", "Ctrl + H  or  Ctrl + .");
 
     append_heading(&content, "FILE OPERATIONS");
     for (label, keys) in [
@@ -2076,6 +2420,41 @@ fn theme_page(manager: Rc<ThemeManager>) -> (gtk::Widget, Vec<(gtk::FlowBox, u32
         system.append(&copy);
         system.append(&follow);
         content.append(&system);
+    }
+
+    append_heading(&content, "TYPOGRAPHY");
+    let text_sizes = [TextSize::Small, TextSize::Medium, TextSize::Large];
+    let active_text_size = text_sizes
+        .iter()
+        .position(|&size| size == manager.text_size())
+        .unwrap_or(1);
+    let (text_size_control, text_size_buttons) =
+        segmented_control(&["Small", "Medium", "Large"], active_text_size);
+    let text_size_row = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    text_size_row.add_css_class("settings-option");
+    let text_size_copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text_size_copy.set_hexpand(true);
+    let text_size_title = gtk::Label::new(Some("Text size"));
+    text_size_title.set_xalign(0.0);
+    text_size_title.add_css_class("settings-option-title");
+    let text_size_description = gtk::Label::new(Some(
+        "Scale interface text across menus, labels, and lists.",
+    ));
+    text_size_description.set_xalign(0.0);
+    text_size_description.set_wrap(true);
+    text_size_description.add_css_class("settings-option-description");
+    text_size_copy.append(&text_size_title);
+    text_size_copy.append(&text_size_description);
+    text_size_row.append(&text_size_copy);
+    text_size_row.append(&text_size_control);
+    content.append(&text_size_row);
+    for (button, size) in text_size_buttons.into_iter().zip(text_sizes) {
+        let manager = manager.clone();
+        button.connect_toggled(move |toggled| {
+            if toggled.is_active() {
+                manager.set_text_size(size);
+            }
+        });
     }
 
     append_heading(&content, "THEMES");

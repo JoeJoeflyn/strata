@@ -7,8 +7,8 @@ use super::*;
 use crate::{
     model::{EntryKind, MetadataValue},
     services::{
-        CancelledOperation, CompressRequest, ExtractRequest, LoadHandle, MetadataOutcome,
-        MetadataRequest, MetadataUpdate, UndoCopyRequest, UndoMoveRequest,
+        CancelledOperation, CompressRequest, DirectoryEvent, ExtractRequest, LoadHandle,
+        MetadataOutcome, MetadataRequest, MetadataUpdate, UndoCopyRequest, UndoMoveRequest,
     },
 };
 

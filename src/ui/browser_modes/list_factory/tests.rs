@@ -121,6 +121,7 @@ impl Fixture {
             columns: columns.clone(),
             scrolling: scrolling.clone(),
             bound_items: items.clone(),
+            state: None,
         }
         .build();
         let view = gtk::ListView::new(Some(selection), Some(factory.clone()));

@@ -208,6 +208,7 @@ impl ViewState {
                     set_column_busy(column, false);
                     update_empty_trash_sensitivity(column, count);
                 }
+                self.note_pending_rename_splices(*depth, splices);
             }
             BrowserEvent::ColumnReloaded { depth } => {
                 if let Some(column) = self.columns.borrow().get(*depth) {
@@ -395,8 +396,17 @@ impl ViewState {
             BrowserEvent::EntryCreated { location } => {
                 self.rename_created_entry(location);
             }
-            BrowserEvent::RenameCompleted => {}
-            BrowserEvent::RenameFailed { message } => {
+            BrowserEvent::RenameCompleted { request_id } => {
+                self.complete_pending_rename(*request_id);
+            }
+            BrowserEvent::RenameAbandoned { request_id } => {
+                self.abandon_pending_rename(*request_id);
+            }
+            BrowserEvent::RenameFailed {
+                request_id,
+                message,
+            } => {
+                self.fail_pending_rename_from_browser(*request_id);
                 show_error_dialog(&self.overlay, "Unable to rename item", message);
             }
             BrowserEvent::TransferStarted { total, moving } => {
@@ -616,6 +626,24 @@ impl ViewState {
             self.refresh_active_path_rows();
         }
         self.mode_views.borrow_mut().handle(event);
+        self.reconcile_pending_rename();
+        match event {
+            BrowserEvent::ColumnAdded { depth, .. } | BrowserEvent::ColumnReloaded { depth } => {
+                self.note_pending_rename_refresh(*depth);
+            }
+            _ => {}
+        }
+        if matches!(
+            event,
+            BrowserEvent::LoadFinished { .. } | BrowserEvent::LoadFailed { .. }
+        ) {
+            let depth = match event {
+                BrowserEvent::LoadFinished { depth, .. }
+                | BrowserEvent::LoadFailed { depth, .. } => *depth,
+                _ => unreachable!(),
+            };
+            self.reconcile_pending_rename_after_load(depth);
+        }
     }
 
     fn event_refreshes_active_path(event: &BrowserEvent) -> bool {

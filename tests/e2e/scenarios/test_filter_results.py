@@ -125,7 +125,7 @@ def test_filtered_thumbnail_stays_rendered_across_updates(strata, mode, tmp_path
     strata.wait(lambda: len(strata.matches()) == 2, "image and text results")
     row = strata.window.find(role="list item", name="thumb.png")
     assert row is not None
-    strata.pointer.click(row)
+    strata.pointer.click(row, modifiers=("ctrl",))
     strata.pointer.click(field)
     icon = row.find(role="image")
     assert icon is not None

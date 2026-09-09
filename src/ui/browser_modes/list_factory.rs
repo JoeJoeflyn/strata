@@ -91,7 +91,13 @@ impl ListFactory {
             self.transfers.clone(),
             self.depth,
             Some((self.positions.index.clone(), self.positions.view.clone())),
-            (Some(row.name.upcast_ref()), &content_click),
+            self.state.clone(),
+            (
+                Some(row.name.upcast_ref()),
+                Some(row.icon.upcast_ref()),
+                &content_click,
+                true,
+            ),
         );
     }
 

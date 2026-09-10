@@ -869,50 +869,7 @@ impl PreviewState {
                     }
                 });
 
-                let picture = gtk::Picture::for_paintable(&media);
-                picture.add_css_class("preview-media");
-                picture.set_content_fit(gtk::ContentFit::Contain);
-                picture.set_hexpand(true);
-                picture.set_vexpand(true);
-                picture.set_cursor_from_name(Some("grab"));
-                install_preview_drag(&picture, self);
-
-                let overlay = gtk::Overlay::new();
-                overlay.set_child(Some(&picture));
-                overlay.set_focusable(true);
-                overlay.set_can_target(true);
-
-                let center_play = gtk::Button::new();
-                center_play.add_css_class("preview-media-center");
-                center_play.set_halign(gtk::Align::Center);
-                center_play.set_valign(gtk::Align::Center);
-                center_play.set_visible(false);
-                let center_icon = crate::assets::primary_icon(crate::assets::icons::PLAY, 48);
-                center_play.set_child(Some(&center_icon));
-                overlay.add_overlay(&center_play);
-
-                let media_for_center = media.clone();
-                center_play.connect_clicked(move |_| {
-                    if media_for_center.is_playing() {
-                        media_for_center.pause();
-                    } else {
-                        media_for_center.play();
-                    }
-                });
-
-                let media_for_click = media.clone();
-                let overlay_for_focus = overlay.clone();
-                let click = gtk::GestureClick::new();
-                click.connect_pressed(move |_, _, _, _| {
-                    overlay_for_focus.grab_focus();
-                    if media_for_click.is_playing() {
-                        media_for_click.pause();
-                    } else {
-                        media_for_click.play();
-                    }
-                });
-                picture.add_controller(click);
-
+                let (overlay, center_play) = self.build_media_view(&media);
                 self.content.append(&overlay);
 
                 if is_gif {
@@ -976,6 +933,56 @@ impl PreviewState {
                 );
             }
         }
+    }
+
+    fn build_media_view(self: &Rc<Self>, media: &gtk::MediaFile) -> (gtk::Overlay, gtk::Button) {
+        let picture = gtk::Picture::for_paintable(media);
+        picture.add_css_class("preview-media");
+        picture.set_content_fit(gtk::ContentFit::Contain);
+        picture.set_hexpand(true);
+        picture.set_vexpand(true);
+        picture.set_cursor_from_name(Some("grab"));
+        install_preview_drag(&picture, self);
+
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&picture));
+        overlay.set_focusable(true);
+        overlay.set_can_target(true);
+
+        let center_play = gtk::Button::new();
+        center_play.add_css_class("preview-media-center");
+        center_play.set_halign(gtk::Align::Center);
+        center_play.set_valign(gtk::Align::Center);
+        center_play.set_visible(false);
+        let center_icon = crate::assets::primary_icon(crate::assets::icons::PLAY, 48);
+        center_play.set_child(Some(&center_icon));
+        overlay.add_overlay(&center_play);
+
+        let media_for_center = media.clone();
+        center_play.connect_clicked(move |_| {
+            if media_for_center.is_playing() {
+                media_for_center.pause();
+            } else {
+                media_for_center.play();
+            }
+        });
+
+        let media_for_click = media.clone();
+        let overlay_for_focus = overlay.downgrade();
+        let click = gtk::GestureClick::new();
+        click.connect_pressed(move |_, _, _, _| {
+            if let Some(overlay) = overlay_for_focus.upgrade() {
+                overlay.grab_focus();
+            }
+            if media_for_click.is_playing() {
+                media_for_click.pause();
+            } else {
+                media_for_click.play();
+            }
+        });
+        picture.add_controller(click);
+
+        (overlay, center_play)
     }
 
     fn render_pdf_viewer(
@@ -1375,10 +1382,12 @@ impl PreviewState {
         });
         let seeking_for_end = seeking.clone();
         let media_for_drag_end = media.clone();
-        let seek_for_drag_end = seek.clone();
+        let seek_for_drag_end = seek.downgrade();
         drag.connect_drag_end(move |_, _, _| {
             seeking_for_end.set(false);
-            media_for_drag_end.seek(seek_for_drag_end.value() as i64);
+            if let Some(seek) = seek_for_drag_end.upgrade() {
+                media_for_drag_end.seek(seek.value() as i64);
+            }
         });
         seek.add_controller(drag);
 
@@ -1439,6 +1448,9 @@ impl PreviewState {
                 stream.disconnect(handler);
             }
             stream.set_playing(false);
+            if let Some(media_file) = stream.downcast_ref::<gtk::MediaFile>() {
+                media_file.clear();
+            }
         }
         self.media_toggle_mute.replace(None);
         self.media_volume_slider.replace(None);

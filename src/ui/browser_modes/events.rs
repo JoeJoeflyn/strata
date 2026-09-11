@@ -68,11 +68,19 @@ impl ModeViews {
                 });
             }
             BrowserEvent::EntriesSpliced { depth, splices, .. } => {
+                let restore_cursor = self
+                    .panes_at(*depth)
+                    .iter()
+                    .any(|pane| pane_holds_keyboard_focus(pane));
                 let positions = self.browser.selected_positions(*depth);
                 self.update_panes(*depth, |pane| {
                     pane.splice_rows(splices);
                     set_selections(pane, &positions);
                 });
+                if restore_cursor && !positions.is_empty() {
+                    self.suppress_focus_scroll();
+                    self.focus_visible_pane(*depth);
+                }
             }
             BrowserEvent::MetadataFilled { depth, updates } => {
                 if self.mode == BrowserMode::List {

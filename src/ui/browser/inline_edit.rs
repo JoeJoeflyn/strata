@@ -722,7 +722,10 @@ impl ViewState {
                 scroll.vadjustment().set_value(value);
             }
             // Focus the native item, not ListView's stale pre-sort keyboard cursor.
-            if let Some(cursor) = row.parent() {
+            if let Some(focus) = list.root().and_then(|root| root.focus())
+                && (focus == *list || focus.is_ancestor(list))
+                && let Some(cursor) = row.parent()
+            {
                 let adjustment = scroll.vadjustment();
                 let value = adjustment.value();
                 cursor.grab_focus();

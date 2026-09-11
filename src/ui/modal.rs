@@ -4,17 +4,12 @@ use crate::ui::blur::BlurBin;
 use crate::ui::controls::{ModalTone, message_dialog_description, message_dialog_layout};
 use gtk::glib;
 use gtk::prelude::*;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
 #[cfg(test)]
 mod tests;
-
-thread_local! {
-    static PREVIOUS_FOCUS: RefCell<Vec<(glib::object::WeakRef<gtk::Box>, glib::object::WeakRef<gtk::Widget>)>> =
-        const { RefCell::new(Vec::new()) };
-}
 
 pub(super) struct ModalHost {
     pub(super) overlay: gtk::Overlay,
@@ -80,7 +75,7 @@ pub(super) fn modal_layer(
     let click = gtk::GestureClick::new();
     let weak_layer = layer.downgrade();
     let weak_content = content.downgrade();
-    let click_overlay = overlay.clone();
+    let overlay = overlay.clone();
     let root = root.clone();
     let block = block_dismiss.clone();
     click.connect_pressed(move |_, _, x, y| {
@@ -105,16 +100,11 @@ pub(super) fn modal_layer(
                     && y < cy + alloc.height() as f64
             });
         if !on_dialog {
-            dismiss_modal_layer(&layer, &click_overlay, root.as_ref());
+            dismiss_modal_layer(&layer, &overlay, root.as_ref());
         }
     });
     layer.add_controller(click);
     crate::ui::focus_navigation::install(&layer);
-    if let Some(focused) = overlay.root().and_then(|root| root.focus()) {
-        PREVIOUS_FOCUS.with_borrow_mut(|focuses| {
-            focuses.push((layer.downgrade(), focused.downgrade()));
-        });
-    }
     animate_in(&layer);
     layer
 }
@@ -192,13 +182,6 @@ pub(super) fn dismiss_modal_layer(
     }
     layer.add_css_class("dismissing");
     layer.set_sensitive(false);
-    let previous = PREVIOUS_FOCUS.with_borrow_mut(|focuses| {
-        focuses.retain(|(l, _)| l.upgrade().is_some());
-        let index = focuses
-            .iter()
-            .position(|(candidate, _)| candidate.upgrade().as_ref() == Some(layer))?;
-        focuses.swap_remove(index).1.upgrade()
-    });
     let overlay = overlay.clone();
     let layer_for_anim = layer.clone();
     let layer = layer.clone();
@@ -209,9 +192,6 @@ pub(super) fn dismiss_modal_layer(
             && !overlay_has_modal_layer(&overlay)
         {
             root.set_blurred(false);
-            if let Some(previous) = previous {
-                previous.grab_focus();
-            }
         }
     });
 }

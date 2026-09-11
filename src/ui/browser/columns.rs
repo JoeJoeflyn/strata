@@ -180,6 +180,56 @@ pub(super) fn scroll_column_to(column: &ColumnView, position: u32) {
     scroll_collection_when_allocated(column.list.upcast_ref(), position);
 }
 
+pub(super) fn focus_column_cursor_without_scroll(column: &ColumnView, position: u32) {
+    let list = column.list.downgrade();
+    let scroll = column.listing_scroll.downgrade();
+    let rows = column.bound_rows.clone();
+    glib::idle_add_local_once(move || {
+        let (Some(list), Some(scroll)) = (list.upgrade(), scroll.upgrade()) else {
+            return;
+        };
+        if focus_bound_column_cursor(&list, &scroll, &rows, position) {
+            return;
+        }
+        let frames = Cell::new(0u8);
+        list.add_tick_callback(move |list, _| {
+            if focus_bound_column_cursor(list, &scroll, &rows, position) || frames.get() >= 8 {
+                return glib::ControlFlow::Break;
+            }
+            frames.set(frames.get().saturating_add(1));
+            glib::ControlFlow::Continue
+        });
+    });
+}
+
+fn focus_bound_column_cursor(
+    list: &gtk::ListView,
+    scroll: &gtk::ScrolledWindow,
+    rows: &RefCell<Vec<BoundRow>>,
+    position: u32,
+) -> bool {
+    let focused = list.root().and_then(|root| root.focus());
+    if !focused.as_ref().is_some_and(|focused| {
+        focused == list || list.is_ancestor(focused) || focused.is_ancestor(list)
+    }) {
+        return true;
+    }
+    let Some(cursor) = rows.borrow().iter().find_map(|bound| {
+        let item = bound.item.upgrade()?;
+        (item.position() == position)
+            .then(|| bound.row.upgrade()?.parent())
+            .flatten()
+            .filter(|cursor| cursor.is_mapped())
+    }) else {
+        return false;
+    };
+    let adjustment = scroll.vadjustment();
+    let value = adjustment.value();
+    cursor.grab_focus();
+    adjustment.set_value(value);
+    true
+}
+
 pub(super) fn set_column_selection(column: &ColumnView, position: u32) {
     column.syncing_selection.set(true);
     column.selection.unselect_all();

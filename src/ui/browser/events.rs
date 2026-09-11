@@ -8,9 +8,10 @@ use crate::model::FileEntry;
 use crate::services::LocationValidationError;
 use crate::ui::browser::ViewState;
 use crate::ui::browser::columns::{
-    column_size_text, prune_missing_search_results, scroll_column_to, set_column_busy,
-    set_column_selection, set_column_selections, set_filter_placeholder, stop_column_spinner,
-    touch_source_model, update_empty_trash_sensitivity,
+    column_size_text, focus_column_cursor_without_scroll, prune_missing_search_results,
+    scroll_column_to, set_column_busy, set_column_selection, set_column_selections,
+    set_filter_placeholder, stop_column_spinner, touch_source_model,
+    update_empty_trash_sensitivity,
 };
 use crate::ui::browser::desktop::open_location;
 use crate::ui::browser::entry::item_count_label;
@@ -188,6 +189,7 @@ impl ViewState {
                 splices,
                 selected,
             } => {
+                let restore_cursor = self.focused_column_depth() == Some(*depth);
                 if let Some(column) = self.columns.borrow().get(*depth) {
                     let mut count = column.entry_count.get();
                     for splice in splices {
@@ -216,6 +218,12 @@ impl ViewState {
                     }
                     set_column_busy(column, false);
                     update_empty_trash_sensitivity(column, count);
+                    if restore_cursor
+                        && let Some(position) =
+                            selected.and_then(|position| column.map.view_position(position))
+                    {
+                        focus_column_cursor_without_scroll(column, position);
+                    }
                 }
                 self.note_pending_rename_splices(*depth, splices);
                 if self.pending_archive_destination.borrow().is_some() {
@@ -444,12 +452,6 @@ impl ViewState {
                         }
                         if *take_focus && self.mode_views.borrow().mode() == BrowserMode::Columns {
                             column.list.grab_focus();
-                            let list = column.list.downgrade();
-                            glib::idle_add_local_once(move || {
-                                if let Some(list) = list.upgrade() {
-                                    list.grab_focus();
-                                }
-                            });
                         }
                     }
                 }

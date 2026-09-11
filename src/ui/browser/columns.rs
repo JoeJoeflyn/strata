@@ -40,12 +40,21 @@ pub(super) struct BoundRow {
     pub(super) rename_label: glib::WeakRef<gtk::Label>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum PendingActivationKind {
+    Standard { preview: bool },
+    ChooserSearchNavigate,
+    RecursiveSearch,
+    Mapped,
+}
+
 struct PendingPointerActivation {
+    // Source-model index for Standard/Mapped; search-result index otherwise.
     pub(super) position: usize,
     pub(super) location: Location,
     pub(super) press: (f64, f64),
     pub(super) moved: bool,
-    pub(super) preview: bool,
+    pub(super) kind: PendingActivationKind,
 }
 
 impl PendingPointerActivation {

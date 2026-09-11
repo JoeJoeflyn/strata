@@ -195,13 +195,14 @@ pub(super) fn restore_column_cursor(column: &ColumnView, position: u32) {
             {
                 return glib::ControlFlow::Break;
             }
-            if let Some(cursor) = rows.borrow().iter().find_map(|bound| {
+            let cursor = rows.borrow().iter().find_map(|bound| {
                 let item = bound.item.upgrade()?;
                 (item.position() == position)
                     .then(|| bound.row.upgrade()?.parent())
                     .flatten()
                     .filter(|cursor| cursor.is_mapped())
-            }) {
+            });
+            if let Some(cursor) = cursor {
                 cursor.grab_focus();
                 return glib::ControlFlow::Break;
             }

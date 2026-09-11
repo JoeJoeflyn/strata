@@ -77,9 +77,39 @@ impl ModeViews {
                     pane.splice_rows(splices);
                     set_selections(pane, &positions);
                 });
-                if restore_cursor && !positions.is_empty() {
-                    self.suppress_focus_scroll();
-                    self.focus_visible_pane(*depth);
+                if restore_cursor && !positions.is_empty() && !self.rename_is_active() {
+                    let target = self.browser.focused_item().map(|(_, position, _)| position);
+                    let missing_cursor = !self.panes_at(*depth).iter().any(|pane| {
+                        pane.item_sections().iter().any(|section| {
+                            let Some(focused) = section.view.root().and_then(|root| root.focus())
+                            else {
+                                return false;
+                            };
+                            if self.mode == BrowserMode::Icons && focused.is_ancestor(&section.view)
+                            {
+                                return true;
+                            }
+                            section.bound_items.borrow().iter().any(|bound| {
+                                let Some(item) = bound.item.upgrade() else {
+                                    return false;
+                                };
+                                let source = item
+                                    .item()
+                                    .and_then(|item| pane.source_index.of_item(&item));
+                                source == target
+                                    && bound
+                                        .widget
+                                        .upgrade()
+                                        .and_then(|widget| widget.parent())
+                                        .as_ref()
+                                        == Some(&focused)
+                            })
+                        })
+                    });
+                    if missing_cursor {
+                        self.suppress_focus_scroll();
+                        self.focus_visible_pane(*depth);
+                    }
                 }
             }
             BrowserEvent::MetadataFilled { depth, updates } => {

@@ -14,6 +14,47 @@ fn wait_until(condition: impl Fn() -> bool) {
     }
 }
 
+#[test]
+fn background_splices_preserve_column_multiselection_and_pending_properties() {
+    crate::test_support::gtk_test(
+        "ui::browser::tests::focus::background_splices_preserve_column_multiselection_and_pending_properties",
+        || {
+            let fixture = tempfile::tempdir().expect("directory fixture");
+            for name in ["alpha", "bravo", "charlie"] {
+                std::fs::write(fixture.path().join(name), name).expect("fixture file");
+            }
+            let view = BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                PeekBehavior::default(),
+            );
+            let browser = view.browser();
+            browser.navigate(Location::local(fixture.path()));
+            wait_until(|| browser.column_snapshot(0).is_some_and(|s| !s.loading));
+            browser.set_selection(0, &[0, 2], Some(2));
+            view.state.handle(&BrowserEvent::EntriesSpliced {
+                depth: 0,
+                splices: Vec::new(),
+            });
+            let columns = view.state.columns.borrow();
+            assert!(columns[0].selection.is_selected(0));
+            assert!(!columns[0].selection.is_selected(1));
+            assert!(columns[0].selection.is_selected(2));
+            assert_eq!(browser.selected_positions(0), vec![0, 2]);
+            drop(columns);
+
+            view.state.pending_select.replace(vec!["alpha".into()]);
+            view.state.pending_select_properties.set(true);
+            view.state.handle(&BrowserEvent::LoadFinished {
+                depth: 1,
+                truncated: false,
+            });
+            assert!(view.state.pending_select_properties.get());
+            assert_eq!(*view.state.pending_select.borrow(), vec!["alpha"]);
+            browser.clear_observer();
+        },
+    );
+}
+
 fn assert_column_header_actions(view: &BrowserView, active_depth: usize) {
     for (depth, column) in view.state.columns.borrow().iter().enumerate() {
         assert_eq!(

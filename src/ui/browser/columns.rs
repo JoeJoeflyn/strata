@@ -180,63 +180,38 @@ pub(super) fn scroll_column_to(column: &ColumnView, position: u32) {
     scroll_collection_when_allocated(column.list.upcast_ref(), position);
 }
 
-pub(super) fn focus_column_cursor_without_scroll(column: &ColumnView, position: u32) {
+pub(super) fn restore_column_cursor(column: &ColumnView, position: u32) {
     let list = column.list.downgrade();
-    let scroll = column.listing_scroll.downgrade();
     let rows = column.bound_rows.clone();
     glib::idle_add_local_once(move || {
-        let (Some(list), Some(scroll)) = (list.upgrade(), scroll.upgrade()) else {
-            return;
-        };
-        if focus_bound_column_cursor(&list, &scroll, &rows, position) {
-            return;
-        }
+        let Some(list) = list.upgrade() else { return };
         let frames = Cell::new(0u8);
         list.add_tick_callback(move |list, _| {
-            if focus_bound_column_cursor(list, &scroll, &rows, position) || frames.get() >= 8 {
+            let focused = list.root().and_then(|root| root.focus());
+            if !focused
+                .as_ref()
+                .is_some_and(|focused| focused == list || list.is_ancestor(focused))
+            {
+                return glib::ControlFlow::Break;
+            }
+            if let Some(cursor) = rows.borrow().iter().find_map(|bound| {
+                let item = bound.item.upgrade()?;
+                (item.position() == position)
+                    .then(|| bound.row.upgrade()?.parent())
+                    .flatten()
+                    .filter(|cursor| cursor.is_mapped())
+            }) {
+                cursor.grab_focus();
                 return glib::ControlFlow::Break;
             }
             frames.set(frames.get().saturating_add(1));
-            glib::ControlFlow::Continue
+            if frames.get() >= 8 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
         });
     });
-}
-
-fn focus_bound_column_cursor(
-    list: &gtk::ListView,
-    scroll: &gtk::ScrolledWindow,
-    rows: &RefCell<Vec<BoundRow>>,
-    position: u32,
-) -> bool {
-    let focused = list.root().and_then(|root| root.focus());
-    if !focused.as_ref().is_some_and(|focused| {
-        focused == list || list.is_ancestor(focused) || focused.is_ancestor(list)
-    }) {
-        return true;
-    }
-    let Some(cursor) = rows.borrow().iter().find_map(|bound| {
-        let item = bound.item.upgrade()?;
-        (item.position() == position)
-            .then(|| bound.row.upgrade()?.parent())
-            .flatten()
-            .filter(|cursor| cursor.is_mapped())
-    }) else {
-        return false;
-    };
-    let adjustment = scroll.vadjustment();
-    let value = adjustment.value();
-    cursor.grab_focus();
-    adjustment.set_value(value);
-    true
-}
-
-pub(super) fn set_column_selection(column: &ColumnView, position: u32) {
-    column.syncing_selection.set(true);
-    column.selection.unselect_all();
-    if position != gtk::INVALID_LIST_POSITION {
-        column.selection.select_item(position, true);
-    }
-    column.syncing_selection.set(false);
 }
 
 pub(super) fn set_column_selections(column: &ColumnView, positions: &[u32]) {

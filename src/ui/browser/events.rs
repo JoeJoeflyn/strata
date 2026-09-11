@@ -8,10 +8,9 @@ use crate::model::FileEntry;
 use crate::services::LocationValidationError;
 use crate::ui::browser::ViewState;
 use crate::ui::browser::columns::{
-    column_size_text, focus_column_cursor_without_scroll, prune_missing_search_results,
-    scroll_column_to, set_column_busy, set_column_selection, set_column_selections,
-    set_filter_placeholder, stop_column_spinner, touch_source_model,
-    update_empty_trash_sensitivity,
+    column_size_text, prune_missing_search_results, restore_column_cursor, scroll_column_to,
+    set_column_busy, set_column_selections, set_filter_placeholder, stop_column_spinner,
+    touch_source_model, update_empty_trash_sensitivity,
 };
 use crate::ui::browser::desktop::open_location;
 use crate::ui::browser::entry::item_count_label;
@@ -184,11 +183,7 @@ impl ViewState {
                     set_column_busy(column, false);
                 }
             }
-            BrowserEvent::EntriesSpliced {
-                depth,
-                splices,
-                selected,
-            } => {
+            BrowserEvent::EntriesSpliced { depth, splices, .. } => {
                 let restore_cursor = self.focused_column_depth() == Some(*depth);
                 if let Some(column) = self.columns.borrow().get(*depth) {
                     let mut count = column.entry_count.get();
@@ -205,12 +200,20 @@ impl ViewState {
                     }
                     column.entry_count.set(count);
                     set_filter_placeholder(column, count);
-                    set_column_selection(
-                        column,
-                        selected
-                            .and_then(|position| column.map.view_position(position))
-                            .unwrap_or(gtk::INVALID_LIST_POSITION),
-                    );
+                    let positions: Vec<_> = self
+                        .browser
+                        .selected_positions(*depth)
+                        .into_iter()
+                        .filter_map(|position| column.map.view_position(position))
+                        .collect();
+                    set_column_selections(column, &positions);
+                    if restore_cursor
+                        && let Some((focused_depth, position, _)) = self.browser.focused_item()
+                        && focused_depth == *depth
+                        && let Some(position) = column.map.view_position(position)
+                    {
+                        restore_column_cursor(column, position);
+                    }
                     if count == 0 {
                         column.presentation.show_empty();
                     } else {
@@ -218,12 +221,6 @@ impl ViewState {
                     }
                     set_column_busy(column, false);
                     update_empty_trash_sensitivity(column, count);
-                    if restore_cursor
-                        && let Some(position) =
-                            selected.and_then(|position| column.map.view_position(position))
-                    {
-                        focus_column_cursor_without_scroll(column, position);
-                    }
                 }
                 self.note_pending_rename_splices(*depth, splices);
                 if self.pending_archive_destination.borrow().is_some() {
@@ -349,7 +346,8 @@ impl ViewState {
                     } else {
                         Vec::new()
                     };
-                    let properties = self.pending_select_properties.replace(false);
+                    let properties =
+                        !names.is_empty() && self.pending_select_properties.replace(false);
                     if !names.is_empty() || !locations.is_empty() {
                         let weak = Rc::downgrade(self);
                         let depth = *depth;

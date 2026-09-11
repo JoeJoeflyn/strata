@@ -21,6 +21,7 @@ use crate::{
 const HARDWARE_ATTEMPT_TIME_LIMIT: Duration = Duration::from_secs(8);
 const HARDWARE_TOTAL_TIME_LIMIT: Duration = Duration::from_secs(12);
 const MEDIA_TOTAL_TIME_LIMIT: Duration = Duration::from_secs(28);
+const MEDIA_PROBE_TIME_LIMIT: Duration = Duration::from_secs(4);
 const SOFTWARE_H264_TIME_LIMIT: Duration = Duration::from_secs(8);
 const MAX_MEDIA_ALLOCATION_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_MEDIA_DECODE_PIXELS: u64 = 50_000_000;
@@ -282,8 +283,13 @@ fn render_media_preview(
     policy: MediaPreviewBackend,
     size: MediaPreviewSize,
 ) -> Result<Vec<u8>, String> {
-    let backends = media_backends(&gpu_devices(Path::new("/dev"), policy), policy);
     let started = Instant::now();
+    let has_video = input_has_video(path);
+    let backends = if has_video {
+        media_backends(&gpu_devices(Path::new("/dev"), policy), policy)
+    } else {
+        vec![MediaBackend::SoftwareVp8]
+    };
     let hardware_started = Instant::now();
     run_media_backends(&backends, |backend| {
         let total_remaining = MEDIA_TOTAL_TIME_LIMIT.saturating_sub(started.elapsed());
@@ -298,13 +304,34 @@ fn render_media_preview(
                     .min(total_remaining)
             }
         };
-        let mut command = media_command(backend, path, size);
+        let mut command = media_command(backend, path, size, has_video);
         bounded_output_with_timeout(&mut command, MAX_OUTPUT_BYTES, timeout).map(|result| {
             result.and_then(|output| {
                 (output.status.success() && !output.stdout.is_empty()).then_some(output.stdout)
             })
         })
     })
+}
+
+fn input_has_video(path: &Path) -> bool {
+    let mut command = Command::new("ffprobe");
+    command
+        .args(["-v", "error", "-select_streams", "v"])
+        .args(["-show_entries", "stream=index", "-of", "csv=p=0"])
+        .arg(path);
+    let output =
+        bounded_output_with_timeout(&mut command, MAX_OUTPUT_BYTES, MEDIA_PROBE_TIME_LIMIT)
+            .ok()
+            .flatten();
+    probe_saw_video(output)
+}
+
+fn probe_saw_video(output: Option<Output>) -> bool {
+    // An inconclusive probe must preserve the existing video fallback.
+    match output {
+        Some(output) if output.status.success() => !output.stdout.is_empty(),
+        _ => true,
+    }
 }
 
 fn media_backends(devices: &[PathBuf], policy: MediaPreviewBackend) -> Vec<MediaBackend> {
@@ -344,7 +371,12 @@ fn media_backends(devices: &[PathBuf], policy: MediaPreviewBackend) -> Vec<Media
     backends
 }
 
-fn media_command(backend: &MediaBackend, path: &Path, size: MediaPreviewSize) -> Command {
+fn media_command(
+    backend: &MediaBackend,
+    path: &Path,
+    size: MediaPreviewSize,
+    has_video: bool,
+) -> Command {
     let MediaPreviewSize { width, height } = MediaPreviewSize::new(size.width, size.height);
     let mut command = Command::new("ffmpeg");
     command
@@ -352,6 +384,14 @@ fn media_command(backend: &MediaBackend, path: &Path, size: MediaPreviewSize) ->
         .arg(MAX_MEDIA_ALLOCATION_BYTES.to_string())
         .arg("-max_pixels")
         .arg(MAX_MEDIA_DECODE_PIXELS.to_string());
+    if !has_video {
+        command
+            .arg("-i")
+            .arg(path)
+            .args(["-map", "0:a:0?", "-vn", "-sn", "-dn", "-t", "30"])
+            .args(["-c:a", "libopus", "-b:a", "96k", "-f", "webm", "pipe:1"]);
+        return command;
+    }
     match backend {
         MediaBackend::VaApi(device) => {
             command

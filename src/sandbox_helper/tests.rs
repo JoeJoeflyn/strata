@@ -4,7 +4,7 @@ mod media;
 
 use std::{
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
     time::{Duration, Instant},
 };
 
@@ -12,8 +12,8 @@ use gdk_pixbuf::prelude::*;
 
 use super::{
     MediaBackend, bounded_output, bounded_output_with_timeout, bounded_surface_dimensions,
-    media_backends, media_command, read_limited, render_pixbuf, render_raw, render_raw_thumbnail,
-    render_simple_dcraw, run, run_media_backends, scale_embedded_thumbnail,
+    media_backends, media_command, probe_saw_video, read_limited, render_pixbuf, render_raw,
+    render_raw_thumbnail, render_simple_dcraw, run, run_media_backends, scale_embedded_thumbnail,
 };
 use crate::{sandbox::MediaPreviewBackend, services::MediaPreviewSize};
 
@@ -22,6 +22,7 @@ fn arguments(backend: &MediaBackend) -> String {
         backend,
         Path::new("/input"),
         MediaPreviewSize::new(640, 800),
+        true,
     )
     .get_args()
     .map(|argument| argument.to_string_lossy())
@@ -231,7 +232,8 @@ fn media_commands_select_the_backend_and_preserve_limits() {
             media_command(
                 &backend,
                 Path::new("/input"),
-                MediaPreviewSize::new(640, 800)
+                MediaPreviewSize::new(640, 800),
+                true,
             )
             .get_envs()
             .any(|(name, value)| name == "MALLOC_ARENA_MAX" && value == Some("1".as_ref()))
@@ -278,6 +280,53 @@ fn media_commands_select_the_backend_and_preserve_limits() {
         assert!(command.contains("-b:v 2M -maxrate 3M -bufsize 4M"));
         assert!(command.ends_with("pipe:1"));
     }
+}
+
+#[test]
+fn audio_only_media_commands_emit_webm_audio_without_video_options() {
+    for backend in [
+        MediaBackend::VaApi("/dev/dri/renderD129".into()),
+        MediaBackend::Vulkan(1),
+        MediaBackend::SoftwareH264,
+        MediaBackend::SoftwareVp8,
+    ] {
+        let command = media_command(
+            &backend,
+            Path::new("/input"),
+            MediaPreviewSize::new(640, 800),
+            false,
+        )
+        .get_args()
+        .map(|argument| argument.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+        assert!(!command.contains("-hwaccel"));
+        assert!(!command.contains("-vf"));
+        assert!(!command.contains("-c:v"));
+        assert!(!command.contains("0:v:0"));
+        assert!(!command.contains("-fpsmax"));
+        assert!(!command.contains("-b:v"));
+        assert!(command.contains("-max_alloc 536870912 -max_pixels 50000000"));
+        assert!(command.contains("-map 0:a:0? -vn -sn -dn -t 30"));
+        assert!(command.contains("-c:a libopus -b:a 96k -f webm"));
+        assert!(command.ends_with("pipe:1"));
+    }
+}
+
+#[test]
+fn video_probe_output_only_succeeds_on_detected_video_streams() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let output = |status: i32, stdout: &[u8]| Output {
+        status: std::process::ExitStatus::from_raw(status),
+        stdout: stdout.to_vec(),
+        stderr: Vec::new(),
+    };
+
+    assert!(probe_saw_video(Some(output(0, b"0\n"))));
+    assert!(!probe_saw_video(Some(output(0, b""))));
+    assert!(probe_saw_video(Some(output(1, b"0\n"))));
+    assert!(probe_saw_video(None));
 }
 
 #[test]

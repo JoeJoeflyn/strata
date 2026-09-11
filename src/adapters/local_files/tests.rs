@@ -263,6 +263,31 @@ fn coalescing_preserves_a_move_when_metadata_follows_it() {
 }
 
 #[test]
+fn atomic_temporary_write_coalesces_into_destination_upsert() {
+    let mut pending = HashMap::new();
+    let temp = Location::local("/fixture/file.tmp");
+    let dest = Location::local("/fixture/file");
+    assert!(queue_monitor_change(
+        &mut pending,
+        Some(temp.clone()),
+        PendingMonitorChange::Upsert(temp),
+    ));
+    assert!(queue_monitor_change(
+        &mut pending,
+        Some(dest.clone()),
+        PendingMonitorChange::Move {
+            from: Location::local("/fixture/file.tmp"),
+            to: dest.clone(),
+        },
+    ));
+    assert_eq!(pending.len(), 1);
+    assert!(matches!(
+        pending.get(&Some(dest)),
+        Some(PendingMonitorChange::Upsert(_))
+    ));
+}
+
+#[test]
 fn large_monitor_bursts_collapse_to_one_rescan() {
     let mut pending = HashMap::new();
     for index in 0..=MAX_PENDING_MONITOR_CHANGES {

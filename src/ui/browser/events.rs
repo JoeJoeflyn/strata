@@ -425,6 +425,12 @@ impl ViewState {
                         }
                         if *take_focus && self.mode_views.borrow().mode() == BrowserMode::Columns {
                             column.list.grab_focus();
+                            let list = column.list.downgrade();
+                            glib::idle_add_local_once(move || {
+                                if let Some(list) = list.upgrade() {
+                                    list.grab_focus();
+                                }
+                            });
                         }
                     }
                 }

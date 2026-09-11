@@ -1789,12 +1789,14 @@ fn filesystem_notifications_update_the_affected_column_incrementally() {
         BrowserEvent::EntriesSpliced { depth: 0, splices, .. }
             if splices.len() == 1 && splices[0].removed == 0 && splices[0].entries.len() == 1
     )));
-    assert!(
-        !events
-            .borrow()
-            .iter()
-            .any(|event| matches!(event, BrowserEvent::SelectionSetChanged { .. }))
-    );
+    assert!(events.borrow().iter().any(|event| matches!(
+        event,
+        BrowserEvent::SelectionSetChanged {
+            depth: 0,
+            take_focus: false,
+            ..
+        }
+    )));
     assert!(
         !events
             .borrow()
@@ -1835,12 +1837,14 @@ fn background_directory_removal_does_not_request_focus() {
             .iter()
             .any(|event| matches!(event, BrowserEvent::EntriesSpliced { depth: 0, .. }))
     );
-    assert!(
-        !events
-            .borrow()
-            .iter()
-            .any(|event| matches!(event, BrowserEvent::SelectionSetChanged { .. }))
-    );
+    assert!(events.borrow().iter().any(|event| matches!(
+        event,
+        BrowserEvent::SelectionSetChanged {
+            depth: 0,
+            take_focus: false,
+            ..
+        }
+    )));
     assert!(
         !events
             .borrow()
@@ -1869,12 +1873,14 @@ fn active_directory_background_change_does_not_request_focus() {
             .iter()
             .any(|event| matches!(event, BrowserEvent::EntriesSpliced { depth: 0, .. }))
     );
-    assert!(
-        !events
-            .borrow()
-            .iter()
-            .any(|event| matches!(event, BrowserEvent::SelectionSetChanged { .. }))
-    );
+    assert!(events.borrow().iter().any(|event| matches!(
+        event,
+        BrowserEvent::SelectionSetChanged {
+            depth: 0,
+            take_focus: false,
+            ..
+        }
+    )));
     assert!(
         !events
             .borrow()

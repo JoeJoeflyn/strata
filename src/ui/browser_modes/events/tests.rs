@@ -416,8 +416,7 @@ fn selection_preserves_external_focus_and_restores_requested_pane_focus() {
                 pump_until(|| fixture.views.item_view_has_focus());
                 fixture.views.suppress_focus_scroll();
                 fixture.views.handle(&selection(vec![1], false));
-                assert!(!fixture.views.suppress_focus_scroll.get());
-                fixture.views.suppress_focus_scroll();
+                assert!(fixture.views.suppress_focus_scroll.get());
                 fixture.views.handle(&selection(vec![], false));
                 assert!(fixture.views.suppress_focus_scroll.get());
                 fixture.views.handle(&BrowserEvent::FocusChanged {

@@ -3,8 +3,8 @@
 use gtk::{gio, prelude::*};
 
 use super::{
-    BrowserMode, ModeViews, Pane, reconnect_pane_model, replace_entries, set_selections,
-    show_count, update_bound_list_metadata,
+    BrowserMode, ModeViews, Pane, pane_holds_keyboard_focus, reconnect_pane_model, replace_entries,
+    set_selections, show_count, update_bound_list_metadata,
 };
 use crate::{
     app::{Browser, BrowserEvent, EntryInsertion, EntrySplice},
@@ -68,7 +68,11 @@ impl ModeViews {
                 });
             }
             BrowserEvent::EntriesSpliced { depth, splices, .. } => {
-                self.update_panes(*depth, |pane| pane.splice_rows(splices));
+                let positions = self.browser.selected_positions(*depth);
+                self.update_panes(*depth, |pane| {
+                    pane.splice_rows(splices);
+                    set_selections(pane, &positions);
+                });
             }
             BrowserEvent::MetadataFilled { depth, updates } => {
                 if self.mode == BrowserMode::List {
@@ -121,8 +125,12 @@ impl ModeViews {
     }
 
     fn update_selection(&self, depth: usize, positions: &[usize], take_focus: bool) {
+        let view_has_focus = self
+            .panes_at(depth)
+            .iter()
+            .any(|pane| pane_holds_keyboard_focus(pane));
         self.update_panes(depth, |pane| set_selections(pane, positions));
-        if take_focus {
+        if take_focus || (view_has_focus && !positions.is_empty()) {
             self.focus_visible_pane(depth);
         }
     }

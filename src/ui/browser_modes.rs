@@ -1301,15 +1301,6 @@ fn widget_has_focus(widget: &impl IsA<gtk::Widget>, focused: Option<&gtk::Widget
         })
 }
 
-fn pane_holds_keyboard_focus(pane: &Pane) -> bool {
-    let focused = pane.stack.root().and_then(|root| root.focus());
-    widget_has_focus(&pane.stack, focused.as_ref())
-        || pane
-            .item_sections()
-            .iter()
-            .any(|section| widget_has_focus(&section.view, focused.as_ref()))
-}
-
 #[derive(Clone)]
 struct ListOptions {
     state: Option<Weak<super::browser::ViewState>>,

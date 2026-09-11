@@ -1779,10 +1779,10 @@ fn filesystem_notifications_update_the_affected_column_incrementally() {
     }));
 
     assert!(
-        events
+        !events
             .borrow()
             .iter()
-            .any(|event| matches!(event, BrowserEvent::FocusChanged { depth: 0, .. }))
+            .any(|event| matches!(event, BrowserEvent::FocusChanged { .. }))
     );
     assert!(events.borrow().iter().any(|event| matches!(
         event,
@@ -1831,6 +1831,42 @@ fn background_directory_removal_does_not_request_focus() {
             .selected_positions,
         [0]
     );
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, BrowserEvent::EntriesSpliced { depth: 0, .. }))
+    );
+    assert!(events.borrow().iter().any(|event| matches!(
+        event,
+        BrowserEvent::SelectionSetChanged {
+            depth: 0,
+            take_focus: false,
+            ..
+        }
+    )));
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, BrowserEvent::FocusChanged { .. }))
+    );
+}
+
+#[test]
+fn active_directory_background_change_does_not_request_focus() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    let parent = Location::local("/fixture");
+    browser.navigate(parent.clone());
+    browser.handle_directory_change(0, &parent, DirectoryChange::Upsert(batch_entry("alpha")));
+    assert_eq!(browser.active_depth(), Some(0));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    browser.observe(move |event| observed.borrow_mut().push(event.clone()));
+
+    browser.handle_directory_change(0, &parent, DirectoryChange::Upsert(batch_entry("beta")));
+
+    assert_eq!(browser.active_depth(), Some(0));
     assert!(
         events
             .borrow()

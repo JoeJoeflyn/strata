@@ -1025,11 +1025,13 @@ fn queue_monitor_change(
     if pending.contains_key(&None) {
         return false;
     }
-    if let PendingMonitorChange::Move { ref from, ref to } = change
-        && let Some(PendingMonitorChange::Upsert(_)) = pending.remove(&Some(from.clone()))
+    if let PendingMonitorChange::Move { ref from, .. } = change
+        && matches!(
+            pending.get(&Some(from.clone())),
+            Some(PendingMonitorChange::Upsert(_))
+        )
     {
-        pending.insert(Some(to.clone()), PendingMonitorChange::Upsert(to.clone()));
-        return true;
+        pending.remove(&Some(from.clone()));
     }
     pending
         .entry(key)

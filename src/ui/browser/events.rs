@@ -418,7 +418,9 @@ impl ViewState {
                     // an in-progress rename (visible for slow network directories
                     // that stream many batches). A pending creation still needs to scroll.
                     if self.active_rename.borrow().is_none() {
-                        if *take_focus && let Some(focused) = column.map.view_position(*focused) {
+                        if (*take_focus || self.focused_column_depth() == Some(*depth))
+                            && let Some(focused) = column.map.view_position(*focused)
+                        {
                             scroll_column_to(column, focused);
                         }
                         if *take_focus && self.mode_views.borrow().mode() == BrowserMode::Columns {

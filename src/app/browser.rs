@@ -3204,20 +3204,12 @@ impl Browser {
             .borrow_mut()
             .apply_directory_change(depth, watched, change);
         if let Some((splices, selected)) = application {
-            let positions = self.state.borrow().selected_positions(depth);
             self.emit(BrowserEvent::EntriesSpliced {
                 depth,
                 splices,
                 selected,
             });
-            if let Some(focused) = selected {
-                self.emit(BrowserEvent::SelectionSetChanged {
-                    depth,
-                    positions,
-                    focused,
-                    take_focus: false,
-                });
-            } else if self.active_depth() == Some(depth) {
+            if selected.is_none() && self.active_depth() == Some(depth) {
                 self.emit(BrowserEvent::FocusChanged {
                     depth,
                     position: None,

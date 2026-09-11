@@ -181,13 +181,39 @@ pub(super) fn scroll_column_to(column: &ColumnView, position: u32) {
     scroll_collection_when_allocated(column.list.upcast_ref(), position);
 }
 
-pub(super) fn set_column_selection(column: &ColumnView, position: u32) {
-    column.syncing_selection.set(true);
-    column.selection.unselect_all();
-    if position != gtk::INVALID_LIST_POSITION {
-        column.selection.select_item(position, true);
-    }
-    column.syncing_selection.set(false);
+pub(super) fn restore_column_cursor(column: &ColumnView, position: u32) {
+    let list = column.list.downgrade();
+    let rows = column.bound_rows.clone();
+    glib::idle_add_local_once(move || {
+        let Some(list) = list.upgrade() else { return };
+        let frames = Cell::new(0u8);
+        list.add_tick_callback(move |list, _| {
+            let focused = list.root().and_then(|root| root.focus());
+            if !focused
+                .as_ref()
+                .is_some_and(|focused| focused == list || list.is_ancestor(focused))
+            {
+                return glib::ControlFlow::Break;
+            }
+            let cursor = rows.borrow().iter().find_map(|bound| {
+                let item = bound.item.upgrade()?;
+                (item.position() == position)
+                    .then(|| bound.row.upgrade()?.parent())
+                    .flatten()
+                    .filter(|cursor| cursor.is_mapped())
+            });
+            if let Some(cursor) = cursor {
+                cursor.grab_focus();
+                return glib::ControlFlow::Break;
+            }
+            frames.set(frames.get().saturating_add(1));
+            if frames.get() >= 8 {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    });
 }
 
 pub(super) fn set_column_selections(column: &ColumnView, positions: &[u32]) {

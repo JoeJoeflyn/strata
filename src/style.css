@@ -3241,14 +3241,6 @@ colorchooser colorswatch overlay {
   animation: slide-out-up 240ms ease-out;
 }
 
-.file-appear {
-  opacity: 0;
-}
-
-.file-row.file-appear {
-  transform: translate(0, 6px);
-}
-
 .file-row:drop(active),
 .file-row.drop-destination {
   background: alpha(@theme_highlight, 0.72);

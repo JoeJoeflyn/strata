@@ -140,6 +140,9 @@ pub enum BrowserEvent {
     PreviewRequested {
         entry: FileEntry,
     },
+    ExtractRequested {
+        entry: FileEntry,
+    },
     OpenRequested {
         location: Location,
     },
@@ -572,6 +575,12 @@ impl Browser {
 
     pub fn observe(&self, observer: impl Fn(&BrowserEvent) + 'static) {
         self.observers.borrow_mut().push(Rc::new(observer));
+    }
+
+    fn should_extract_on_activate(&self, entry: &FileEntry) -> bool {
+        !self.is_chooser_mode()
+            && entry.location.native_path().is_some()
+            && ArchiveFormat::from_extension(&entry.display_name).is_some()
     }
 
     pub fn set_chooser_mode(&self, chooser: bool) {
@@ -2143,6 +2152,8 @@ impl Browser {
         };
         if entry.is_directory() {
             self.navigate_with_selection(entry.location, select_first);
+        } else if self.should_extract_on_activate(&entry) {
+            self.emit(BrowserEvent::ExtractRequested { entry });
         } else {
             self.emit(BrowserEvent::OpenRequested {
                 location: entry.location,
@@ -2244,6 +2255,8 @@ impl Browser {
             } else {
                 self.descend_with_selection(depth, entry.location, select_first);
             }
+        } else if self.should_extract_on_activate(&entry) {
+            self.emit(BrowserEvent::ExtractRequested { entry });
         } else {
             self.emit(BrowserEvent::OpenRequested {
                 location: entry.location,

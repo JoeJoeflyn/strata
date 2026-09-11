@@ -3105,6 +3105,7 @@ impl Browser {
         }
     }
 
+    #[cfg(test)]
     pub fn select_entries_by_name(self: &Rc<Self>, names: &[String]) {
         let Some(depth) = self.active_depth() else {
             return;
@@ -3119,12 +3120,13 @@ impl Browser {
         })
     }
 
-    pub fn select_entries_by_location(self: &Rc<Self>, locations: &[Location]) {
+    pub fn select_entries_by_location_at(
+        self: &Rc<Self>,
+        depth: usize,
+        locations: &[Location],
+    ) -> bool {
         let requested: HashSet<_> = locations.iter().collect();
-        let Some(depth) = self.active_depth() else {
-            return;
-        };
-        self.select_entries_matching_at(depth, |entry| requested.contains(&entry.location));
+        self.select_entries_matching_at(depth, |entry| requested.contains(&entry.location))
     }
 
     fn select_entries_matching_at(

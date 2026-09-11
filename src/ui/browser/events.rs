@@ -312,31 +312,50 @@ impl ViewState {
                             }
                         });
                     }
-                } else if self.browser.active_depth() == Some(*depth)
-                    && (self.mode_views.borrow().mode() != BrowserMode::Columns
-                        || self.pending_archive_destination.borrow().is_none())
-                {
-                    let names = self.pending_select.take();
-                    let properties = self.pending_select_properties.replace(false);
-                    let locations = self
+                } else {
+                    let transfer_target_loaded = self
                         .pending_transfer_selection
-                        .take()
-                        .filter(|(target, _)| {
-                            self.browser.active_location().as_ref() == Some(target)
-                        })
-                        .map(|(_, locations)| locations)
-                        .unwrap_or_default();
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|(target, _)| {
+                            self.browser.location_at(*depth).as_ref() == Some(target)
+                        });
+                    if transfer_target_loaded
+                        && self.mode_views.borrow().mode() == BrowserMode::Columns
+                    {
+                        self.browser.set_active_column(*depth);
+                    }
+                    let locations = if transfer_target_loaded {
+                        self.pending_transfer_selection
+                            .take()
+                            .map(|(_, locations)| locations)
+                            .unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    let names = if self.browser.active_depth() == Some(*depth)
+                        && (self.mode_views.borrow().mode() != BrowserMode::Columns
+                            || self.pending_archive_destination.borrow().is_none())
+                    {
+                        self.pending_select.take()
+                    } else {
+                        Vec::new()
+                    };
+                    let properties = self.pending_select_properties.replace(false);
                     if !names.is_empty() || !locations.is_empty() {
                         let weak = Rc::downgrade(self);
-                        let location = self.browser.active_location();
+                        let depth = *depth;
+                        let destination = self.browser.location_at(depth);
                         glib::idle_add_local_once(move || {
                             if let Some(state) = weak.upgrade()
-                                && state.browser.active_location() == location
+                                && state.browser.location_at(depth) == destination
                             {
-                                if locations.is_empty() {
-                                    state.browser.select_entries_by_name(&names);
-                                } else {
-                                    state.browser.select_entries_by_location(&locations);
+                                if !locations.is_empty() {
+                                    state
+                                        .browser
+                                        .select_entries_by_location_at(depth, &locations);
+                                } else if !names.is_empty() {
+                                    state.browser.select_entries_by_name_at(depth, &names);
                                 }
                                 if state
                                     .pending_archive_destination

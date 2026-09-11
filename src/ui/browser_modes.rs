@@ -1109,7 +1109,6 @@ impl ModeViews {
             for pane in self.panes_at(depth) {
                 pane.stack.grab_focus();
             }
-            return;
         }
         if self.suppress_focus_scroll.replace(false) {
             if let Some(position) = position
@@ -1128,9 +1127,7 @@ impl ModeViews {
         }
         let view = view.downgrade();
         glib::idle_add_local_once(move || {
-            if let Some(view) = view.upgrade()
-                && widget_has_focus(&view, view.root().and_then(|root| root.focus()).as_ref())
-            {
+            if let Some(view) = view.upgrade() {
                 if view
                     .root()
                     .and_then(|root| root.focus())
@@ -1141,10 +1138,9 @@ impl ModeViews {
                 {
                     return;
                 }
+                view.grab_focus();
                 if let Some(position) = position {
                     focus_collection_item(&view, position);
-                } else {
-                    view.grab_focus();
                 }
             }
         });

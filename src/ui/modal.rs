@@ -192,6 +192,9 @@ pub(super) fn dismiss_modal_layer(
             && !overlay_has_modal_layer(&overlay)
         {
             root.set_blurred(false);
+            if let Some(child) = root.first_child() {
+                child.grab_focus();
+            }
         }
     });
 }

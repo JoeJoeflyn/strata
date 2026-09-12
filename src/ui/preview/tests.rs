@@ -1,12 +1,70 @@
 // SPDX-License-Identifier: MIT
 
+mod media_size;
 mod preferences;
 
+use std::rc::Rc;
+
+use gtk::{glib, prelude::*};
+
 use super::{
-    MEDIA_PLUGIN_INSTALL_COMMAND, PDF_MAX_ZOOM, PDF_MIN_ZOOM, format_file_size, format_media_time,
-    media_error_feedback, pdf_zoom_after_scroll, preview_drag_entries,
+    MEDIA_PLUGIN_INSTALL_COMMAND, PDF_MAX_ZOOM, PDF_MIN_ZOOM, PreviewDrawer, format_file_size,
+    format_media_time, media_error_feedback, pdf_zoom_after_scroll, preview_drag_entries,
     preview_width_for_empty_space, print_fit, print_page_starts, print_progress_for_page,
 };
+use crate::services::{LoadHandle, PreviewEvent, PreviewProvider, PreviewRequest};
+use crate::ui::theme::ThemeManager;
+
+struct UnusedPreviewProvider;
+
+impl PreviewProvider for UnusedPreviewProvider {
+    fn load(&self, _request: PreviewRequest, _emit: Rc<dyn Fn(PreviewEvent)>) -> LoadHandle {
+        panic!("media teardown test does not load previews")
+    }
+}
+
+struct WeakMediaWidgets {
+    overlay: glib::WeakRef<gtk::Overlay>,
+    picture: glib::WeakRef<gtk::Picture>,
+    media: glib::WeakRef<crate::ui::media::DecodedMedia>,
+}
+
+fn render_media_widgets(drawer: &PreviewDrawer, is_gif: bool) -> WeakMediaWidgets {
+    let media = crate::ui::media::tests::player(false, 1_000_000);
+    drawer
+        .state
+        .media
+        .replace(Some(media.clone().upcast::<gtk::MediaStream>()));
+    let (overlay, center_play) = drawer.state.build_media_view(media.upcast_ref());
+    let picture = overlay
+        .child()
+        .and_downcast::<gtk::Picture>()
+        .expect("production media picture");
+    drawer.state.content.append(&overlay);
+    drawer.state.append_media_controls(
+        media.upcast_ref(),
+        &ThemeManager::shared(),
+        &overlay.clone().upcast(),
+        &center_play,
+        is_gif,
+    );
+
+    WeakMediaWidgets {
+        overlay: overlay.downgrade(),
+        picture: picture.downgrade(),
+        media: media.downgrade(),
+    }
+}
+
+fn assert_media_hierarchy_finalized(widgets: &WeakMediaWidgets) {
+    assert!(widgets.overlay.upgrade().is_none(), "overlay must finalize");
+    assert!(widgets.picture.upgrade().is_none(), "picture must finalize");
+}
+
+fn assert_media_widgets_finalized(widgets: &WeakMediaWidgets) {
+    assert_media_hierarchy_finalized(widgets);
+    assert!(widgets.media.upgrade().is_none(), "media must finalize");
+}
 
 #[test]
 fn print_fit_centers_landscape_image_on_portrait_page() {
@@ -52,15 +110,12 @@ fn text_print_pages_start_on_line_boundaries() {
 }
 
 #[test]
-fn print_progress_reports_completed_pages() {
+fn print_progress_reports_completed_pages_and_clamps_invalid_counts() {
     assert_eq!(
         print_progress_for_page(3, 8),
         ("Rendering page 3 of 8".to_owned(), 0.375)
     );
-}
 
-#[test]
-fn print_progress_clamps_invalid_counts() {
     assert_eq!(
         print_progress_for_page(3, 0),
         ("Rendering page 1 of 1".to_owned(), 1.0)
@@ -68,22 +123,16 @@ fn print_progress_clamps_invalid_counts() {
 }
 
 #[test]
-fn formats_preview_file_sizes() {
+fn preview_file_sizes_use_decimal_units_and_promote_rounded_overflow() {
     assert_eq!(format_file_size(999), "999 B");
     assert_eq!(format_file_size(1_200), "1.2 kB");
     assert_eq!(format_file_size(2_500_000), "2.5 MB");
-}
 
-#[test]
-fn preview_file_sizes_round_before_choosing_the_unit() {
     assert_eq!(format_file_size(999_950), "1.0 MB");
     assert_eq!(format_file_size(999_950_000), "1.0 GB");
     assert_eq!(format_file_size(9_960), "10 kB");
     assert_eq!(format_file_size(10_000), "10 kB");
-}
 
-#[test]
-fn preview_file_sizes_keep_bytes_whole_and_promote_displayed_overflow() {
     assert_eq!(format_file_size(0), "0 B");
     assert_eq!(format_file_size(5), "5 B");
     assert_eq!(format_file_size(999_450), "1.0 MB");
@@ -97,10 +146,6 @@ fn media_errors_explain_missing_runtime_plugins() {
     assert_eq!(title, "Additional media support required");
     assert!(detail.contains("GStreamer plugins"));
     assert_eq!(command, Some(MEDIA_PLUGIN_INSTALL_COMMAND));
-    assert_eq!(
-        command,
-        Some("sudo pacman -S --needed gst-plugins-good gst-libav")
-    );
 
     let (title, detail, command) = media_error_feedback("The media data is corrupt");
     assert_eq!(title, "Preview unavailable");
@@ -111,7 +156,8 @@ fn media_errors_explain_missing_runtime_plugins() {
 #[test]
 fn initial_preview_uses_most_of_the_unoccupied_width() {
     assert_eq!(preview_width_for_empty_space(2_000, 500), 1_350);
-    assert_eq!(preview_width_for_empty_space(700, 650), 280);
+    assert_eq!(preview_width_for_empty_space(700, 650), 560);
+    assert_eq!(preview_width_for_empty_space(500, 500), 560);
 }
 
 #[test]
@@ -123,24 +169,54 @@ fn pdf_scroll_zoom_stays_within_its_supported_range() {
 }
 
 #[test]
-fn media_time_formats_minutes_and_seconds() {
-    assert_eq!(format_media_time(0, 0), "0:00/0:00");
-    assert_eq!(format_media_time(1_500_000, 65_000_000), "0:01/1:05");
-    assert_eq!(format_media_time(125_000_000, 125_000_000), "2:05/2:05");
+fn clear_content_cancels_decoding_and_releases_the_displayed_frame() {
+    const TEST: &str =
+        "ui::preview::tests::clear_content_cancels_decoding_and_releases_the_displayed_frame";
+    crate::test_support::gtk_test(TEST, || {
+        let media = crate::ui::media::tests::player(false, 30_000_000);
+        let drawer = PreviewDrawer::new(Rc::new(UnusedPreviewProvider), false);
+        drawer.state.media.replace(Some(media.clone().upcast()));
+        media.play();
+        crate::ui::media::tests::wait(|| media.timestamp() > 0);
+        drawer.state.clear_content();
+        assert!(drawer.state.media.borrow().is_none());
+        assert_eq!(media.intrinsic_width(), 0);
+        assert!(!media.is_playing());
+    });
 }
 
 #[test]
-fn media_time_clamps_negative_timestamps_to_zero() {
+fn replacing_repeated_media_previews_finalizes_previous_widget_trees() {
+    const TEST: &str =
+        "ui::preview::tests::replacing_repeated_media_previews_finalizes_previous_widget_trees";
+    crate::test_support::gtk_test(TEST, || {
+        let drawer = PreviewDrawer::new(Rc::new(UnusedPreviewProvider), false);
+        let mut current = render_media_widgets(&drawer, true);
+
+        for is_gif in [false, true, false, true] {
+            drawer.state.clear_content();
+            let next = render_media_widgets(&drawer, is_gif);
+            assert_media_widgets_finalized(&current);
+            current = next;
+        }
+
+        drawer.close();
+        assert_media_widgets_finalized(&current);
+    });
+}
+
+#[test]
+fn media_time_formats_minutes_and_seconds_and_clamps_negative_timestamps() {
+    assert_eq!(format_media_time(0, 0), "0:00/0:00");
+    assert_eq!(format_media_time(1_500_000, 65_000_000), "0:01/1:05");
+    assert_eq!(format_media_time(125_000_000, 125_000_000), "2:05/2:05");
+
     assert_eq!(format_media_time(-500_000, 10_000_000), "0:00/0:10");
 }
 
 #[test]
-fn preview_drag_entries_returns_none_when_no_entry_loaded() {
+fn preview_drag_entries_contains_only_the_loaded_entry() {
     assert_eq!(preview_drag_entries(None), None);
-}
-
-#[test]
-fn preview_drag_entries_wraps_loaded_file_entry() {
     let entry = crate::model::FileEntry {
         location: crate::model::Location::local("/tmp/test.png"),
         native_name: std::ffi::OsString::from("test.png"),

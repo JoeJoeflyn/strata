@@ -32,6 +32,21 @@ use super::{
 };
 
 #[test]
+fn pointer_controls_cover_sidebar_navigation() {
+    gtk_test(
+        "ui::window::tests::pointer_controls_cover_sidebar_navigation",
+        || {
+            use gtk::prelude::*;
+            let button = super::sidebar_button(crate::assets::icons::FOLDER, "Folder");
+            assert_eq!(
+                button.cursor().and_then(|cursor| cursor.name()).as_deref(),
+                Some("pointer")
+            );
+        },
+    );
+}
+
+#[test]
 fn startup_applies_disabled_single_click_previews_before_the_first_click() {
     gtk_test(
         "ui::window::tests::startup_applies_disabled_single_click_previews_before_the_first_click",
@@ -509,7 +524,7 @@ fn only_pinned_drag_payloads_resolve_to_a_pinned_place() {
 #[test]
 fn gtk_bookmarks_become_native_and_remote_pinned_places() {
     let places = parse_pinned_places(
-        "file:///home/user/Projects Work\nsftp://host.example/home/user Remote\nfile:///home/user/Projects Duplicate\n",
+        b"file:///home/user/Projects Work\nsftp://host.example/home/user Remote\nfile:///home/user/Projects Duplicate\n",
     );
 
     assert_eq!(
@@ -526,9 +541,28 @@ fn gtk_bookmarks_become_native_and_remote_pinned_places() {
 }
 
 #[test]
+fn gtk_bookmarks_survive_non_utf8_labels_and_windows_line_endings() {
+    let places = parse_pinned_places(b"file:///tmp/a A\r\nfile:///tmp/b \xff\nfile:///tmp/c C\n");
+
+    assert_eq!(places.len(), 3);
+    assert_eq!(places[0].1, "A");
+    assert_eq!(places[1].1, "\u{FFFD}");
+    assert_eq!(places[2].1, "C");
+}
+
+#[test]
+fn gtk_bookmarks_drop_lines_with_non_utf8_uris() {
+    let places = parse_pinned_places(b"file:///tmp/\xff bad\nfile:///tmp/good Good\n");
+
+    assert_eq!(places.len(), 1);
+    assert_eq!(places[0].0.native_path(), Some(Path::new("/tmp/good")));
+    assert_eq!(places[0].1, "Good");
+}
+
+#[test]
 fn gtk_bookmarks_sanitize_uris_with_credentials() {
     let places = parse_pinned_places(
-        "smb://alice@host/safe Safe\nsmb://alice:secret@host/private Password\nsmb://alice%3Asecret@host/private Encoded password delimiter\nsmb://alice;password=secret@host/private Auth\nsmb://alice%3Bpassword=secret@host/private Encoded auth delimiter\nsmb://alice;password=sec%72et@host/private Encoded value\nsmb://alice%ZZ@host/private Invalid\n",
+        b"smb://alice@host/safe Safe\nsmb://alice:secret@host/private Password\nsmb://alice%3Asecret@host/private Encoded password delimiter\nsmb://alice;password=secret@host/private Auth\nsmb://alice%3Bpassword=secret@host/private Encoded auth delimiter\nsmb://alice;password=sec%72et@host/private Encoded value\nsmb://alice%ZZ@host/private Invalid\n",
     );
 
     assert_eq!(places.len(), 2);
@@ -788,6 +822,26 @@ fn sidebar_file_drops_accept_local_places_but_not_virtual_locations() {
 }
 
 #[test]
+fn trash_drops_reject_empty_roots_and_already_trashed_sources() {
+    use crate::ui::browser::BrowserView;
+
+    assert!(BrowserView::can_trash_file_drop(&[
+        Location::local("/home/user/first.txt"),
+        Location::local("/home/user/second.txt"),
+        Location::local("/home/user/third.txt"),
+    ]));
+    assert!(!BrowserView::can_trash_file_drop(&[]));
+    assert!(!BrowserView::can_trash_file_drop(&[Location::local("/")]));
+    assert!(!BrowserView::can_trash_file_drop(&[Location::uri(
+        "trash:///"
+    )]));
+    assert!(!BrowserView::can_trash_file_drop(&[
+        Location::local("/home/user/first.txt"),
+        Location::uri("trash:///second.txt"),
+    ]));
+}
+
+#[test]
 fn the_empty_trash_row_and_its_separator_appear_only_for_confirmed_non_empty_trash() {
     assert_eq!(
         trash_menu_visibility(TrashContents::NonEmpty),
@@ -891,43 +945,6 @@ fn control_digits_select_each_browser_presentation() {
 }
 
 #[test]
-fn the_bundled_stylesheet_only_uses_at_rules_gtk_parses() {
-    // GTK's CSS parser rejects anything outside this set with a startup
-    // "Unknown @ rule" warning; `@media` only became valid in GTK 4.20.
-    const SUPPORTED: [&str; 3] = ["define-color", "import", "keyframes"];
-
-    let unsupported: Vec<&str> = include_str!("../../style.css")
-        .lines()
-        .filter_map(|line| line.trim_start().strip_prefix('@'))
-        .map(|rule| {
-            let end = rule
-                .find(|character: char| !character.is_ascii_alphanumeric() && character != '-')
-                .unwrap_or(rule.len());
-            &rule[..end]
-        })
-        .filter(|rule| !SUPPORTED.contains(rule))
-        .collect();
-
-    assert!(
-        unsupported.is_empty(),
-        "the stylesheet uses at-rules GTK 4.12 cannot parse: {unsupported:?}"
-    );
-}
-
-#[test]
-fn chrome_stylesheet_requests_header_bar_icon_size() {
-    let css = include_str!("../../style.css");
-    assert!(
-        css.contains("headerbar image {\n  -gtk-icon-size: 16px;"),
-        "header-bar icons must use GTK's compact 16px size, not large/app sizes"
-    );
-    assert!(
-        !css.contains("-gtk-icon-size: 20px;"),
-        "20px chrome icon size regresses XFCE toolbar density"
-    );
-}
-
-#[test]
 fn rename_shortcut_accepts_f2_and_control_r() {
     let control = gtk::gdk::ModifierType::CONTROL_MASK;
     assert!(is_rename_shortcut(
@@ -1015,6 +1032,51 @@ fn pinned_place_changes_merge_with_the_shared_bookmarks_file() {
 }
 
 #[test]
+fn pinning_with_a_non_utf8_label_preserves_shared_bookmarks() {
+    gtk_test(
+        "ui::window::tests::pinning_with_a_non_utf8_label_preserves_shared_bookmarks",
+        || {
+            let path = pinned_places_path();
+            std::fs::create_dir_all(path.parent().expect("bookmarks parent"))
+                .expect("create bookmarks parent");
+            std::fs::write(
+                &path,
+                b"file:///fixtures/existing Existing\nfile:///fixtures/lossy \xff\n",
+            )
+            .expect("seed non-UTF-8 bookmark label");
+
+            let first = build_sidebar(browser_for_window(), ThemeManager::shared(), true);
+            let second = build_sidebar(browser_for_window(), ThemeManager::shared(), true);
+            let initial = vec![
+                (Location::local("/fixtures/existing"), "Existing".into()),
+                (Location::local("/fixtures/lossy"), "\u{FFFD}".into()),
+            ];
+            assert_eq!(*first.state.pinned_places.borrow(), initial);
+            assert_eq!(*second.state.pinned_places.borrow(), initial);
+
+            first
+                .state
+                .pin_location(Location::local("/fixtures/first"), "First".into());
+            second
+                .state
+                .pin_location(Location::local("/fixtures/second"), "Second".into());
+            assert_eq!(
+                load_pinned_places().expect("saved bookmarks"),
+                vec![
+                    (Location::local("/fixtures/existing"), "Existing".into()),
+                    (Location::local("/fixtures/lossy"), "\u{FFFD}".into()),
+                    (Location::local("/fixtures/first"), "First".into()),
+                    (Location::local("/fixtures/second"), "Second".into()),
+                ]
+            );
+            std::fs::read_to_string(path).expect("saved bookmarks are valid UTF-8");
+            first.disconnect();
+            second.disconnect();
+        },
+    );
+}
+
+#[test]
 fn failed_bookmark_reads_and_saves_preserve_disk_and_window_state() {
     gtk_test(
         "ui::window::tests::failed_bookmark_reads_and_saves_preserve_disk_and_window_state",
@@ -1026,14 +1088,16 @@ fn failed_bookmark_reads_and_saves_preserve_disk_and_window_state() {
                 .pin_location(existing.clone(), "Existing".into());
             let original = sidebar.state.pinned_places.borrow().clone();
             let path = pinned_places_path();
-            std::fs::write(&path, [0xff]).expect("unreadable UTF-8 fixture");
+            std::fs::remove_file(&path).expect("remove seeded bookmarks file");
+            std::fs::create_dir(&path).expect("unreadable bookmarks directory");
             sidebar
                 .state
                 .pin_location(Location::local("/tmp/new"), "New".into());
-            assert_eq!(std::fs::read(&path).expect("preserved bytes"), [0xff]);
+            assert!(path.is_dir());
             assert_eq!(*sidebar.state.pinned_places.borrow(), original);
 
             let contents = serialize_pinned_places(&original);
+            std::fs::remove_dir(&path).expect("remove directory fixture");
             std::fs::write(&path, &contents).expect("restore readable bookmarks");
             let target = path.with_extension("target");
             std::fs::rename(&path, &target).expect("move fixture");

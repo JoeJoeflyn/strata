@@ -117,6 +117,27 @@ pass before merge.
   Timing is informational; test failures, incomplete coverage, and invalid
   provenance still fail CI. See `docs/e2e-testing.md`.
 
+## Private media runtime patches
+
+- Before changing GTK, GStreamer, GLib, their Rust bindings, media plugins, or
+  release/build images, review `packaging/media-runtime/README.md` and the pinned
+  patches/source hashes. These are version-specific toolkit patches, not Cargo
+  patches; updating Rust crates alone does not apply or retire them.
+- For each runtime update, inspect upstream fixes and the affected ownership paths.
+  Record whether each patch is still required, needs rebasing, or is superseded.
+  Never silently drop a patch or accept a fuzzy application. Update source hashes,
+  notices, build requirements, and evidence together when changing the baseline.
+- Rebuild and rerun the standalone lifetime and GTK lifecycle regressions against
+  both the unpatched and patched candidate baseline. Confirm actual private-library
+  loading and test supported architectures, plugins, sandbox helpers, and installed
+  upgrade/rollback paths before promoting a runtime-bearing release. Preserve GUI
+  isolation; owner-operated GPU captures require the documented explicit consent.
+- The current patch kit is opt-in source material, not integrated into release
+  builds or installation. Do not claim the next release contains these fixes until
+  the build applies them, the artifact includes the runtime, and installed-artifact
+  tests verify it is loaded. Keep unresolved RAM growth separate from demonstrated
+  crash/GL-resource improvements.
+
 ## Issues and pull requests
 
 - Automated agents must follow the same issue-first workflow and pull request template as human contributors; do not remove or bypass template sections.
@@ -131,6 +152,27 @@ pass before merge.
 - Do not place test implementations inline with production code.
 - Put module unit tests in an adjacent test module, such as `src/app/navigation/tests.rs`, and declare it from the implementation with `#[cfg(test)] mod tests;`.
 - Use the top-level `tests/` directory for integration tests that exercise the crate through its public API.
+
+### Test value
+
+- Test observable behavior, not implementation echoes. Do not add tests whose
+  only purpose is to repeat constants or setter assignments, match CSS text,
+  count incidental widget children, or enforce cosmetic pixel sizes, spacing,
+  and alignment.
+- Keep functional geometry regressions: clipped editors/carets, obscured names,
+  broken hit targets or scrolling, and unreachable controls are real failures.
+  Visual baselines and lifecycle, filesystem-safety, and live-preference coverage
+  are not cosmetic duplicates.
+- Before adding a test, identify the existing coverage owner. Extend a matching
+  setup or use table-driven inputs instead of duplicating default/round-trip
+  assertions or adding another E2E smoke launch. Preserve separate cases where
+  initial state, input route, view mode, or lifecycle exercises distinct behavior.
+- Every parameter and loop dimension must affect the exercised behavior or an
+  assertion. Do not add unused axes that merely run identical cases again.
+- Keep one-off screenshot generators outside the test suite. When consolidating
+  tests, preserve meaningful assertions and document the retained coverage owner;
+  fewer functions alone is not an improvement. See the
+  [test-suite coverage audit](docs/test-suite-audit.md) for examples.
 
 ## Saved preferences
 

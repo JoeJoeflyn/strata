@@ -1488,6 +1488,14 @@ fn install_shortcuts(
             browser.toggle_hidden();
             return glib::Propagation::Stop;
         }
+        if control
+            && !shift
+            && !alt
+            && let Some(mode) = super::window::browser_mode_for_digit(key)
+        {
+            super::window::apply_browser_mode(&state.view, &ThemeManager::shared(), mode);
+            return glib::Propagation::Stop;
+        }
         if control {
             return glib::Propagation::Proceed;
         }

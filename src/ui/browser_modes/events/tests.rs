@@ -327,6 +327,44 @@ fn publication_releases_browser_borrows_before_gtk_notifications() {
 }
 
 #[test]
+fn mode_switching_reuses_existing_panes_and_reattaches_models() {
+    gtk_test(
+        "ui::browser_modes::events::tests::mode_switching_reuses_existing_panes_and_reattaches_models",
+        || {
+            let mut fixture = Fixture::new(BrowserMode::Icons, false);
+            let icons_shell = fixture.pane().shell.clone();
+            let icons_pane = fixture.pane();
+            assert_attached(&icons_pane, true);
+
+            // Switch to list mode: list is created, icons is deactivated (models detached, shell retained)
+            fixture.views.prepare_mode(BrowserMode::List);
+            fixture.views.show_mode(BrowserMode::List);
+            fixture.views.clear_inactive_mode(BrowserMode::Icons);
+            let list_shell = fixture.pane().shell.clone();
+            let list_pane = fixture.pane();
+            assert_attached(&list_pane, true);
+            assert_attached(&icons_pane, false);
+            assert_eq!(
+                fixture.views.icons_panes.first().map(|p| &p.shell),
+                Some(&icons_shell)
+            );
+
+            // Switch back to icons mode: icons shell is reused, models reattached
+            fixture.views.prepare_mode(BrowserMode::Icons);
+            fixture.views.show_mode(BrowserMode::Icons);
+            fixture.views.clear_inactive_mode(BrowserMode::List);
+            assert_eq!(fixture.pane().shell, icons_shell);
+            assert_attached(&icons_pane, true);
+            assert_attached(&list_pane, false);
+            assert_eq!(
+                fixture.views.list_pane.as_ref().map(|p| &p.shell),
+                Some(&list_shell)
+            );
+        },
+    );
+}
+
+#[test]
 fn inactive_depths_and_cached_modes_do_not_receive_row_updates() {
     gtk_test(
         "ui::browser_modes::events::tests::inactive_depths_and_cached_modes_do_not_receive_row_updates",

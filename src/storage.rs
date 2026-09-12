@@ -27,7 +27,6 @@ fn atomic_write_with(
     let result = (|| {
         write(&mut file)?;
         file.flush()?;
-        file.sync_all()?;
         drop(file);
         validate_destination(path)?;
         fs::rename(&temporary_path, path)

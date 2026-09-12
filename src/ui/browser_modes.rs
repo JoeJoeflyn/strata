@@ -844,9 +844,47 @@ impl ModeViews {
         self.mode = mode;
         match mode {
             BrowserMode::Columns => {}
-            BrowserMode::Icons => self.rebuild_icons(),
-            BrowserMode::List => self.rebuild_list(),
+            BrowserMode::Icons => self.prepare_icons(),
+            BrowserMode::List => self.prepare_list(),
         }
+    }
+
+    fn prepare_icons(&mut self) {
+        let Some(depth) = self.browser.active_depth() else {
+            self.clear_icons();
+            return;
+        };
+        let Some(snapshot) = self.browser.column_snapshot(depth) else {
+            return;
+        };
+        if let Some(pane) = self.icons_panes.first()
+            && pane.depth == depth
+            && self.browser.location_at(depth).as_ref() == Some(&snapshot.location)
+        {
+            reconnect_pane_model(pane);
+            apply_snapshot(pane, &snapshot, &self.browser);
+            return;
+        }
+        self.rebuild_icons();
+    }
+
+    fn prepare_list(&mut self) {
+        let Some(depth) = self.browser.active_depth() else {
+            self.clear_list();
+            return;
+        };
+        let Some(snapshot) = self.browser.column_snapshot(depth) else {
+            return;
+        };
+        if let Some(pane) = self.list_pane.as_ref()
+            && pane.depth == depth
+            && self.browser.location_at(depth).as_ref() == Some(&snapshot.location)
+        {
+            reconnect_pane_model(pane);
+            apply_snapshot(pane, &snapshot, &self.browser);
+            return;
+        }
+        self.rebuild_list();
     }
 
     pub fn show_mode(&self, mode: BrowserMode) {
@@ -863,8 +901,20 @@ impl ModeViews {
         }
         match mode {
             BrowserMode::Columns => {}
-            BrowserMode::Icons => self.clear_icons(),
-            BrowserMode::List => self.clear_list(),
+            BrowserMode::Icons => self.deactivate_icons(),
+            BrowserMode::List => self.deactivate_list(),
+        }
+    }
+
+    fn deactivate_icons(&self) {
+        for pane in &self.icons_panes {
+            deactivate_pane_models(pane);
+        }
+    }
+
+    fn deactivate_list(&self) {
+        if let Some(pane) = self.list_pane.as_ref() {
+            deactivate_pane_models(pane);
         }
     }
 
@@ -3621,6 +3671,17 @@ fn detach_pane_models(pane: &Pane) {
         section.syncing.set(true);
         section.selection.set_model(None::<&gio::ListModel>);
         super::browser::detach_collection_view(&section.view);
+    }
+    if let Some(filtered) = pane.filter_model.as_ref() {
+        filtered.set_model(None::<&gio::ListModel>);
+    }
+}
+
+fn deactivate_pane_models(pane: &Pane) {
+    pane.detached.set(true);
+    for section in pane.all_sections() {
+        section.syncing.set(true);
+        section.selection.set_model(None::<&gio::ListModel>);
     }
     if let Some(filtered) = pane.filter_model.as_ref() {
         filtered.set_model(None::<&gio::ListModel>);

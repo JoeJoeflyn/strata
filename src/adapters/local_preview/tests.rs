@@ -236,6 +236,84 @@ fn dropping_a_queued_pdf_render_removes_it_without_consuming_a_slot() {
 }
 
 #[test]
+fn cancelled_in_flight_pdf_renders_keep_the_permit_and_emit_no_stale_events() {
+    use crate::{
+        model::{EntryKind, FileEntry, Location, MetadataValue},
+        services::PreviewRequestId,
+    };
+
+    let _lock = crate::test_support::ASYNC_MAIN_CONTEXT_DEFAULT
+        .lock()
+        .expect("main context lock");
+    let context = glib::MainContext::default();
+    let _owner = context.acquire().expect("main context owner");
+    let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
+
+    for succeeds in [false, true] {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let events_for_emit = events.clone();
+        let (started, receive_started) = oneshot::channel();
+        let (finish, receive_finish) = std::sync::mpsc::channel();
+        let handle = provider.load_with_renderer(
+            PreviewRequest {
+                id: PreviewRequestId(1),
+                entry: FileEntry {
+                    location: Location::local("cancelled.pdf"),
+                    thumbnail_path: None,
+                    native_name: "cancelled.pdf".into(),
+                    display_name: "cancelled.pdf".into(),
+                    kind: EntryKind::File,
+                    size: MetadataValue::Unknown,
+                    modified_unix_seconds: MetadataValue::Unknown,
+                    mode: MetadataValue::Unknown,
+                    is_hidden: false,
+                },
+                text_byte_limit: 1024,
+                pdf_page: 1,
+                media_size: MediaPreviewSize::new(640, 800),
+            },
+            Rc::new(move |event| events_for_emit.borrow_mut().push(event)),
+            move |_, _, _, _, cancellation| {
+                started.send(()).expect("notify renderer started");
+                receive_finish
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("release renderer");
+                assert!(cancellation.is_cancelled());
+                if succeeds {
+                    Ok(crate::sandbox::ParseOutput {
+                        data: vec![1, 2, 3],
+                        page: 1,
+                        pages: 2,
+                    })
+                } else {
+                    Err("late renderer error".into())
+                }
+            },
+        );
+        context.block_on(async {
+            receive_started.await.expect("renderer started");
+            drop(handle);
+            let mut next = request_pdf_render_permit();
+            assert!(
+                next.receive
+                    .as_mut()
+                    .expect("next receiver")
+                    .try_recv()
+                    .expect("next receiver open")
+                    .is_none(),
+                "cancellation must not release the permit before the helper exits"
+            );
+            finish.send(()).expect("finish cancelled renderer");
+            drop(next.acquire().await.expect("next renderer can start"));
+        });
+        assert!(
+            events.borrow().is_empty(),
+            "cancelled load emitted an event"
+        );
+    }
+}
+
+#[test]
 fn preview_cache_evicts_the_least_recent_entry() {
     let mut cache = PreviewCache {
         entries: HashMap::new(),

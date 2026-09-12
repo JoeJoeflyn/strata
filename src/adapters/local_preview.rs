@@ -182,6 +182,25 @@ impl LocalPreviewProvider {
 
 impl PreviewProvider for LocalPreviewProvider {
     fn load(&self, request: PreviewRequest, emit: Rc<dyn Fn(PreviewEvent)>) -> LoadHandle {
+        self.load_with_renderer(request, emit, crate::sandbox::parse)
+    }
+}
+
+impl LocalPreviewProvider {
+    fn load_with_renderer(
+        &self,
+        request: PreviewRequest,
+        emit: Rc<dyn Fn(PreviewEvent)>,
+        render: impl FnOnce(
+            &Path,
+            ParseOperation,
+            i32,
+            MediaPreviewBackend,
+            &Cancellation,
+        ) -> Result<crate::sandbox::ParseOutput, String>
+        + Send
+        + 'static,
+    ) -> LoadHandle {
         let media_preview_backend = (self.media_preview_backend)();
         let request_id = request.id;
         let entry = request.entry.clone();
@@ -379,7 +398,7 @@ impl PreviewProvider for LocalPreviewProvider {
                 let spawn_path = path.clone();
                 let mut thumbnail_to_store = None;
                 let render = gio::spawn_blocking(move || {
-                    let output = crate::sandbox::parse(
+                    let output = render(
                         &spawn_path,
                         operation,
                         value,
@@ -390,6 +409,9 @@ impl PreviewProvider for LocalPreviewProvider {
                 })
                 .await;
                 abort_safe_for_task.set(true);
+                if cancellation_for_task.is_cancelled() {
+                    return;
+                }
                 content = match render {
                     Ok(Ok(output)) if matches!(operation, ParseOperation::PreviewPdf(_)) => {
                         if let Some(mtime) = modified

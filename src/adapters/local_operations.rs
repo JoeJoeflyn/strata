@@ -343,21 +343,28 @@ fn open_local_child_directory<Fd: AsFd>(parent: &Fd, name: &OsStr) -> Result<Own
     // RESOLVE_NO_MAGICLINKS: if `name` changed to a symlink (or a magic
     // link) since it was last inspected, this fails closed instead of
     // opening whatever it now points to.
-    rustix::fs::openat2(
-        parent,
-        name,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-        rustix::fs::ResolveFlags::BENEATH
-            | rustix::fs::ResolveFlags::NO_SYMLINKS
-            | rustix::fs::ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(|error| {
-        format!(
-            "{} changed while it was being read: {error}",
-            name.to_string_lossy()
-        )
-    })
+    loop {
+        match rustix::fs::openat2(
+            parent,
+            name,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+            rustix::fs::ResolveFlags::BENEATH
+                | rustix::fs::ResolveFlags::NO_SYMLINKS
+                | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+        ) {
+            Ok(fd) => return Ok(fd),
+            Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "{} changed while it was being read: {error}",
+                    name.to_string_lossy()
+                ));
+            }
+        }
+    }
 }
 
 fn local_directory_children<Fd: AsFd>(handle: &Fd) -> Result<Vec<OsString>, String> {
@@ -1639,21 +1646,28 @@ fn open_local_delete_target<Fd: AsFd>(
     // RESOLVE_NO_MAGICLINKS: if `name` changed to a symlink (or a magic link)
     // in the moment since the statat above, this fails closed instead of
     // opening whatever it now points to.
-    let handle = rustix::fs::openat2(
-        parent,
-        name,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-        rustix::fs::ResolveFlags::BENEATH
-            | rustix::fs::ResolveFlags::NO_SYMLINKS
-            | rustix::fs::ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(|error| {
-        format!(
-            "{} changed while it was being deleted: {error}",
-            name.to_string_lossy()
-        )
-    })?;
+    let handle = loop {
+        match rustix::fs::openat2(
+            parent,
+            name,
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+            rustix::fs::ResolveFlags::BENEATH
+                | rustix::fs::ResolveFlags::NO_SYMLINKS
+                | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+        ) {
+            Ok(fd) => break fd,
+            Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "{} changed while it was being deleted: {error}",
+                    name.to_string_lossy()
+                ));
+            }
+        }
+    };
     let opened = rustix::fs::fstat(&handle)
         .map_err(|error| format!("Could not recheck {}: {error}", name.to_string_lossy()))?;
     ensure_expected_local_identity(name, &opened, expected)?;
@@ -2156,14 +2170,24 @@ fn open_local_parent_directory(parent_path: &Path) -> Result<OwnedFd, String> {
     if relative.as_os_str().is_empty() {
         return Ok(root);
     }
-    rustix::fs::openat2(
-        &root,
-        relative,
-        rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-        rustix::fs::ResolveFlags::IN_ROOT | rustix::fs::ResolveFlags::NO_MAGICLINKS,
-    )
-    .map_err(|error| format!("Could not safely open {}: {error}", parent_path.display()))
+    loop {
+        match rustix::fs::openat2(
+            &root,
+            relative,
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+            rustix::fs::ResolveFlags::IN_ROOT | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+        ) {
+            Ok(fd) => return Ok(fd),
+            Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Could not safely open {}: {error}",
+                    parent_path.display()
+                ));
+            }
+        }
+    }
 }
 
 fn open_local_parent_beneath(parent_path: &Path, allowed_root: &Path) -> Result<OwnedFd, String> {
@@ -2182,21 +2206,26 @@ fn open_local_parent_beneath(parent_path: &Path, allowed_root: &Path) -> Result<
     let relative = parent_path
         .strip_prefix(allowed_root)
         .map_err(|_| "The restore destination is outside the trash volume".to_owned())?;
-    rustix::fs::openat2(
-        &root,
-        relative,
-        rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-        rustix::fs::ResolveFlags::BENEATH
-            | rustix::fs::ResolveFlags::NO_MAGICLINKS
-            | rustix::fs::ResolveFlags::NO_XDEV,
-    )
-    .map_err(|error| {
-        format!(
-            "Could not safely open restore destination {}: {error}",
-            parent_path.display()
-        )
-    })
+    loop {
+        match rustix::fs::openat2(
+            &root,
+            relative,
+            rustix::fs::OFlags::PATH | rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+            rustix::fs::ResolveFlags::BENEATH
+                | rustix::fs::ResolveFlags::NO_MAGICLINKS
+                | rustix::fs::ResolveFlags::NO_XDEV,
+        ) {
+            Ok(fd) => return Ok(fd),
+            Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Could not safely open restore destination {}: {error}",
+                    parent_path.display()
+                ));
+            }
+        }
+    }
 }
 
 /// Entry point for permanently deleting a local path: opens the target's

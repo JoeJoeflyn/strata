@@ -339,7 +339,7 @@ impl LocalPreviewProvider {
                     return;
                 }
 
-                let shared_thumbnail = if uses_shared_thumbnail(operation, request.pdf_page) {
+                let shared_thumbnail = if uses_shared_thumbnail(operation) {
                     if let Some(mtime) = modified {
                         let thumbnail_path = path.clone();
                         gio::spawn_blocking(move || {
@@ -355,13 +355,6 @@ impl LocalPreviewProvider {
                     None
                 };
                 let placeholder = shared_thumbnail.and_then(|thumb_png| match operation {
-                    ParseOperation::PreviewPdf(_) if request.pdf_page == 0 => {
-                        Some(PreviewContent::Pdf {
-                            png: thumb_png,
-                            page: 0,
-                            pages: 1,
-                        })
-                    }
                     ParseOperation::PreviewImage => {
                         Some(PreviewContent::Rasterized { png: thumb_png })
                     }
@@ -501,9 +494,8 @@ fn pdf_render_size(viewport: MediaPreviewSize) -> PdfRenderSize {
     PdfRenderSize::for_viewport_width(viewport.width)
 }
 
-fn uses_shared_thumbnail(operation: ParseOperation, pdf_page: i32) -> bool {
+fn uses_shared_thumbnail(operation: ParseOperation) -> bool {
     operation == ParseOperation::PreviewImage
-        || (matches!(operation, ParseOperation::PreviewPdf(_)) && pdf_page == 0)
 }
 
 fn full_render_settle_delay(has_placeholder: bool) -> Duration {

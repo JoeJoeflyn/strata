@@ -68,13 +68,93 @@ fn pdf_rendering_fits_the_viewport_width_without_clipping_tall_pages() {
 #[test]
 fn shared_thumbnail_lookup_is_limited_to_supported_placeholders() {
     let pdf = ParseOperation::PreviewPdf(PdfRenderSize::new(640, 800));
-    assert!(uses_shared_thumbnail(ParseOperation::PreviewImage, 0));
-    assert!(uses_shared_thumbnail(pdf, 0));
-    assert!(!uses_shared_thumbnail(pdf, 1));
-    assert!(!uses_shared_thumbnail(
-        ParseOperation::PreviewMedia(MediaPreviewSize::new(640, 800)),
-        0
-    ));
+    assert!(uses_shared_thumbnail(ParseOperation::PreviewImage));
+    assert!(!uses_shared_thumbnail(pdf));
+    assert!(!uses_shared_thumbnail(ParseOperation::PreviewMedia(
+        MediaPreviewSize::new(640, 800)
+    )));
+}
+
+#[test]
+fn cold_pdf_with_a_shared_thumbnail_presents_the_same_document_as_a_cache_hit() {
+    crate::test_support::gtk_test(
+        "adapters::local_preview::tests::cold_pdf_with_a_shared_thumbnail_presents_the_same_document_as_a_cache_hit",
+        || {
+            use crate::{
+                model::{EntryKind, FileEntry, Location, MetadataValue},
+                services::PreviewRequestId,
+            };
+
+            let directory = tempfile::tempdir().expect("PDF fixture directory");
+            let path = directory.path().join("document.pdf");
+            let surface =
+                cairo::ImageSurface::create(cairo::Format::ARgb32, 640, 800).expect("page surface");
+            let mut png = Vec::new();
+            surface.write_to_png(&mut png).expect("page PNG");
+            crate::ui::thumbnail_cache::store(&path, 1, &png);
+            let thumbnail = crate::ui::thumbnail_cache::lookup(&path, 1)
+                .expect("shared thumbnail is available");
+            assert_ne!(thumbnail, png);
+
+            let request = PreviewRequest {
+                id: PreviewRequestId(1),
+                entry: FileEntry {
+                    location: Location::local(&path),
+                    thumbnail_path: None,
+                    native_name: "document.pdf".into(),
+                    display_name: "document.pdf".into(),
+                    kind: EntryKind::File,
+                    size: MetadataValue::Unknown,
+                    modified_unix_seconds: MetadataValue::Known(1),
+                    mode: MetadataValue::Unknown,
+                    is_hidden: false,
+                },
+                text_byte_limit: 1024,
+                pdf_page: 0,
+                media_size: MediaPreviewSize::new(640, 800),
+            };
+            let provider = LocalPreviewProvider::new(Rc::new(|| MediaPreviewBackend::Software));
+            let context = glib::MainContext::default();
+            let _owner = context.acquire().expect("main context owner");
+            for cached in [false, true] {
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let events_for_emit = events.clone();
+                let rendered = png.clone();
+                let handle = provider.load_with_renderer(
+                    request.clone(),
+                    Rc::new(move |event| events_for_emit.borrow_mut().push(event)),
+                    move |_, _, _, _, _| {
+                        assert!(!cached, "reopening should use the rendered-page cache");
+                        Ok(crate::sandbox::ParseOutput {
+                            data: rendered,
+                            page: 0,
+                            pages: 40,
+                        })
+                    },
+                );
+                context.block_on(async {
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while events.borrow().is_empty() && std::time::Instant::now() < deadline {
+                        glib::timeout_future(Duration::from_millis(1)).await;
+                    }
+                });
+                let events = events.borrow();
+                assert_eq!(events.len(), 1);
+                let PreviewEvent::Ready(preview) = &events[0] else {
+                    panic!("PDF preview failed");
+                };
+                assert_eq!(
+                    preview.content,
+                    PreviewContent::Pdf {
+                        png: png.clone(),
+                        page: 0,
+                        pages: 40
+                    }
+                );
+                drop(handle);
+            }
+        },
+    );
 }
 
 #[test]

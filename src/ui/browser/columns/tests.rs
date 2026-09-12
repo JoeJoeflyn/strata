@@ -104,17 +104,25 @@ fn reveal_target_scrolls_only_enough_to_show_the_new_column() {
 }
 
 #[test]
-fn reveal_target_is_stable_when_the_column_is_already_visible() {
+fn reveal_target_includes_peek_of_next_column() {
     assert_eq!(
         horizontal_reveal_target(300.0, 900.0, 0.0, 1_500.0, 900.0, 1_200.0),
-        300.0
+        348.0
     );
 }
 
 #[test]
-fn reveal_target_can_scroll_back_to_an_earlier_column() {
+fn reveal_target_can_scroll_back_with_parent_peek() {
     assert_eq!(
         horizontal_reveal_target(600.0, 900.0, 0.0, 1_500.0, 300.0, 600.0),
-        300.0
+        252.0
+    );
+}
+
+#[test]
+fn reveal_target_for_first_column_aligns_to_start() {
+    assert_eq!(
+        horizontal_reveal_target(300.0, 900.0, 0.0, 1_500.0, 0.0, 300.0),
+        0.0
     );
 }

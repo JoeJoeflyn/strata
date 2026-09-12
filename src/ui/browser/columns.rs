@@ -359,6 +359,8 @@ pub(in crate::ui) fn max_child_natural_width(widget: &gtk::Widget) -> i32 {
     max_natural
 }
 
+pub(super) const COLUMN_PEEK_WIDTH: f64 = 48.0;
+
 fn horizontal_reveal_target(
     current: f64,
     page_size: f64,
@@ -367,11 +369,22 @@ fn horizontal_reveal_target(
     item_left: f64,
     item_right: f64,
 ) -> f64 {
-    let viewport_right = current + page_size;
-    let target = if item_right > viewport_right {
-        item_right - page_size
-    } else if item_left < current {
+    let peek_right = if item_right < upper {
+        (item_right + COLUMN_PEEK_WIDTH).min(upper)
+    } else {
+        item_right
+    };
+    let peek_left = if item_left > lower {
+        (item_left - COLUMN_PEEK_WIDTH).max(lower)
+    } else {
         item_left
+    };
+
+    let viewport_right = current + page_size;
+    let target = if peek_right > viewport_right {
+        peek_right - page_size
+    } else if peek_left < current {
+        peek_left
     } else {
         current
     };

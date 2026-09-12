@@ -31,7 +31,7 @@ fn renders_requested_pdf_pages_within_the_pixel_budget() {
         "preview-pdf".to_owned(),
         path.to_string_lossy().into_owned(),
         output.to_string_lossy().into_owned(),
-        "1".to_owned(),
+        "1:640x800".to_owned(),
         "software".to_owned(),
     ])
     .expect("render second PDF page");
@@ -43,13 +43,34 @@ fn renders_requested_pdf_pages_within_the_pixel_budget() {
 
     assert_eq!(metadata, "1 2");
     assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+    assert_eq!(
+        u32::from_be_bytes(png[16..20].try_into().expect("PNG width bytes")),
+        618
+    );
+    assert_eq!(
+        u32::from_be_bytes(png[20..24].try_into().expect("PNG height bytes")),
+        800
+    );
+}
+
+#[test]
+fn pdf_rendering_fits_the_viewport_width_without_clipping_tall_pages() {
+    assert_eq!(
+        pdf_render_size(MediaPreviewSize::new(640, 480)),
+        PdfRenderSize::new(640, 1_800)
+    );
+    assert_eq!(
+        pdf_render_size(MediaPreviewSize::new(2_000, 480)),
+        PdfRenderSize::new(MediaPreviewSize::MAX_EDGE, 1_800)
+    );
 }
 
 #[test]
 fn shared_thumbnail_lookup_is_limited_to_supported_placeholders() {
+    let pdf = ParseOperation::PreviewPdf(PdfRenderSize::new(640, 800));
     assert!(uses_shared_thumbnail(ParseOperation::PreviewImage, 0));
-    assert!(uses_shared_thumbnail(ParseOperation::PreviewPdf, 0));
-    assert!(!uses_shared_thumbnail(ParseOperation::PreviewPdf, 1));
+    assert!(uses_shared_thumbnail(pdf, 0));
+    assert!(!uses_shared_thumbnail(pdf, 1));
     assert!(!uses_shared_thumbnail(
         ParseOperation::PreviewMedia(MediaPreviewSize::new(640, 800)),
         0
@@ -110,12 +131,12 @@ fn preview_cache_stores_and_retrieves_entries() {
     let pdf_page_0 = PreviewCacheKey {
         path: PathBuf::from("doc.pdf"),
         modified: 300,
-        pdf_page: Some(0),
+        pdf_page: Some((0, PdfRenderSize::new(640, 800))),
     };
     let pdf_page_1 = PreviewCacheKey {
         path: PathBuf::from("doc.pdf"),
         modified: 300,
-        pdf_page: Some(1),
+        pdf_page: Some((1, PdfRenderSize::new(640, 800))),
     };
     let page0_content = PreviewContent::Pdf {
         png: vec![10, 20],
@@ -131,6 +152,87 @@ fn preview_cache_stores_and_retrieves_entries() {
     cache.insert(pdf_page_1.clone(), page1_content.clone());
     assert_eq!(cache.get(&pdf_page_0), Some(page0_content));
     assert_eq!(cache.get(&pdf_page_1), Some(page1_content));
+    assert_eq!(
+        cache.get(&PreviewCacheKey {
+            path: PathBuf::from("doc.pdf"),
+            modified: 300,
+            pdf_page: Some((0, PdfRenderSize::new(800, 1_800))),
+        }),
+        None,
+        "a page rendered for a smaller viewport must not poison a larger preview"
+    );
+}
+
+#[test]
+fn pdf_renders_wait_for_the_active_renderer_and_resume_in_order() {
+    let context = glib::MainContext::new();
+    context.block_on(async {
+        let first = request_pdf_render_permit()
+            .acquire()
+            .await
+            .expect("first PDF render permit");
+        let mut second = request_pdf_render_permit();
+        let mut third = request_pdf_render_permit();
+
+        assert!(
+            second
+                .receive
+                .as_mut()
+                .expect("second receiver")
+                .try_recv()
+                .expect("second receiver open")
+                .is_none()
+        );
+        assert!(
+            third
+                .receive
+                .as_mut()
+                .expect("third receiver")
+                .try_recv()
+                .expect("third receiver open")
+                .is_none()
+        );
+
+        drop(first);
+        let second = second.acquire().await.expect("second PDF render permit");
+        assert!(
+            third
+                .receive
+                .as_mut()
+                .expect("third receiver")
+                .try_recv()
+                .expect("third receiver open")
+                .is_none()
+        );
+        drop(second);
+        drop(third.acquire().await.expect("third PDF render permit"));
+    });
+
+    PDF_RENDER_QUEUE.with(|queue| {
+        let queue = queue.borrow();
+        assert_eq!(queue.running, 0);
+        assert!(queue.queued.is_empty());
+    });
+}
+
+#[test]
+fn dropping_a_queued_pdf_render_removes_it_without_consuming_a_slot() {
+    let context = glib::MainContext::new();
+    context.block_on(async {
+        let first = request_pdf_render_permit()
+            .acquire()
+            .await
+            .expect("first PDF render permit");
+        let cancelled = request_pdf_render_permit();
+        drop(cancelled);
+        drop(first);
+    });
+
+    PDF_RENDER_QUEUE.with(|queue| {
+        let queue = queue.borrow();
+        assert_eq!(queue.running, 0);
+        assert!(queue.queued.is_empty());
+    });
 }
 
 #[test]

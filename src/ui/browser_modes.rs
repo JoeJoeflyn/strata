@@ -209,6 +209,7 @@ struct PaneSection {
     bound_items: Rc<RefCell<Vec<BoundModeItem>>>,
     syncing: Rc<Cell<bool>>,
     visit: super::marquee::ItemVisitor,
+    item_context_trigger: Rc<dyn Fn(f64, f64)>,
 }
 
 #[derive(Clone)]
@@ -238,6 +239,7 @@ struct Pane {
     empty_trash_button: Option<gtk::Button>,
     show_hidden: Rc<Cell<bool>>,
     filter: gtk::CustomFilter,
+    folder_context_trigger: Rc<dyn Fn(f64, f64)>,
 }
 
 impl Pane {
@@ -1183,14 +1185,12 @@ impl ModeViews {
         }
     }
 
-    /// The menu for the pane's own background. Item menus belong to the sections that
-    /// render them, so a grouped view installs one per group as it is built.
-    fn install_context_menu(&self, pane: &Pane) {
+    fn install_context_menu(&self, pane: &Pane) -> Rc<dyn Fn(f64, f64)> {
         let Some(state) = self.context_state.borrow().as_ref().and_then(Weak::upgrade) else {
-            return;
+            return Rc::new(|_, _| {});
         };
         let Some(location) = self.browser.location_at(pane.depth) else {
-            return;
+            return Rc::new(|_, _| {});
         };
         pane.search.install_context_menu(&state, pane.depth);
         let search = pane.search.clone();
@@ -1215,7 +1215,51 @@ impl ModeViews {
             }),
             pane.depth,
             location,
-        );
+        )
+    }
+
+    pub(super) fn context_menu_target(
+        &self,
+        depth: usize,
+        position: Option<usize>,
+    ) -> Option<crate::ui::browser::ContextMenuTarget> {
+        let pane = self.panes_at(depth).into_iter().next()?;
+        if pane.search.selected_entries().is_some() {
+            if let Some(target) = pane.search.context_menu_target() {
+                return Some(target);
+            }
+        } else if let Some(position) = position {
+            for section in pane.item_sections() {
+                let Some(view_position) =
+                    view_position_for_source(&pane.model, Some(&section.view_model), position)
+                else {
+                    continue;
+                };
+                let Some(widget) = section.bound_items.borrow().iter().find_map(|bound| {
+                    let item = bound.item.upgrade()?;
+                    (item.position() == view_position).then(|| bound.widget.upgrade())?
+                }) else {
+                    continue;
+                };
+                if let Some(bounds) = widget.compute_bounds(&section.view) {
+                    return Some((
+                        section.item_context_trigger.clone(),
+                        f64::from(bounds.center().x()),
+                        f64::from(bounds.center().y()),
+                    ));
+                }
+            }
+            return None;
+        }
+        let width = f64::from(pane.stack.width());
+        let height = f64::from(pane.stack.height());
+        (width > 0.0 && height > 0.0).then(|| {
+            (
+                pane.folder_context_trigger.clone(),
+                width / 2.0,
+                height / 2.0,
+            )
+        })
     }
 
     fn clear_icons(&mut self) {
@@ -1244,7 +1288,7 @@ impl ModeViews {
             return;
         };
         self.clear_icons();
-        let pane = build_icons_pane(
+        let mut pane = build_icons_pane(
             self.browser.clone(),
             ModeClickOptions {
                 previews: self.single_click_previews.clone(),
@@ -1264,7 +1308,7 @@ impl ModeViews {
             &snapshot.location.display_name(),
         );
         configure_icons_density(&pane, self.density);
-        self.install_context_menu(&pane);
+        pane.folder_context_trigger = self.install_context_menu(&pane);
         self.icons_root.append(&pane.shell);
         apply_snapshot(&pane, &snapshot, &self.browser);
         self.icons_panes.push(pane);
@@ -1279,7 +1323,7 @@ impl ModeViews {
             return;
         };
         self.clear_list();
-        let pane = build_list_pane(
+        let mut pane = build_list_pane(
             self.browser.clone(),
             ModeClickOptions {
                 previews: self.single_click_previews.clone(),
@@ -1296,7 +1340,7 @@ impl ModeViews {
             depth,
             &snapshot.location.display_name(),
         );
-        self.install_context_menu(&pane);
+        pane.folder_context_trigger = self.install_context_menu(&pane);
         self.list_root.append(&pane.shell);
         apply_snapshot(&pane, &snapshot, &self.browser);
         self.list_navigation.borrow_mut().prepare(&pane, &snapshot);
@@ -1774,6 +1818,7 @@ fn build_icons_pane(
         empty_trash_button: controls.empty_trash_button,
         show_hidden,
         filter: filter_for_pane,
+        folder_context_trigger: Rc::new(|_, _| {}),
     };
     refresh_marquee_targets(&pane);
     pane
@@ -1928,13 +1973,14 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
             browser.activate_in_place(depth, position);
         }
     });
-    let section = PaneSection {
+    let mut section = PaneSection {
         view: view.clone().upcast(),
         view_model,
         selection,
         bound_items: bound_items.clone(),
         syncing: syncing_selection,
         visit: bound_item_visitor(bound_items),
+        item_context_trigger: Rc::new(|_, _| {}),
     };
     connect_selection(
         &section,
@@ -1945,7 +1991,7 @@ fn build_icons_view(context: &Rc<IconsContext>, model: &impl IsA<gio::ListModel>
         context.click.multiple_selection.clone(),
     );
     if let Some(state) = context.state.as_ref().and_then(Weak::upgrade) {
-        install_section_context_menu(
+        section.item_context_trigger = install_section_context_menu(
             &state,
             &section,
             context.sections.clone(),
@@ -2496,13 +2542,14 @@ fn build_list_pane(
             browser.activate_in_place(depth, position);
         }
     });
-    let section = PaneSection {
+    let mut section = PaneSection {
         view: view.clone().upcast(),
         view_model: view_model_object,
         selection,
         bound_items: bound_items.clone(),
         syncing: syncing_selection,
         visit: bound_item_visitor(bound_items),
+        item_context_trigger: Rc::new(|_, _| {}),
     };
     let browser_for_filter_activate = Rc::downgrade(&browser);
     let selection_for_filter_activate = section.selection.clone();
@@ -2521,7 +2568,6 @@ fn build_list_pane(
             depth,
         );
     });
-    sections.borrow_mut().push(section.clone());
     connect_selection(
         &section,
         Rc::downgrade(&sections),
@@ -2531,7 +2577,7 @@ fn build_list_pane(
         click_options.multiple_selection,
     );
     if let Some(state) = options.state.as_ref().and_then(Weak::upgrade) {
-        install_section_context_menu(
+        section.item_context_trigger = install_section_context_menu(
             &state,
             &section,
             Rc::downgrade(&sections),
@@ -2539,6 +2585,7 @@ fn build_list_pane(
             depth,
         );
     }
+    sections.borrow_mut().push(section.clone());
     let scroll = gtk::ScrolledWindow::builder()
         .child(&view)
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -2619,6 +2666,7 @@ fn build_list_pane(
         empty_trash_button: is_trash.then_some(empty_trash),
         show_hidden,
         filter: filter_for_pane,
+        folder_context_trigger: Rc::new(|_, _| {}),
     };
     refresh_marquee_targets(&pane);
     pane
@@ -4136,21 +4184,27 @@ fn install_section_context_menu(
     sections: Weak<RefCell<Vec<PaneSection>>>,
     source_index: &SourceIndexMap,
     depth: usize,
-) {
-    let owner = section.clone();
-    let pick_position = Rc::new(move |picked: &gtk::Widget| section_item_position(&owner, picked));
+) -> Rc<dyn Fn(f64, f64)> {
+    let items = section.bound_items.clone();
+    let pick_position = Rc::new(move |picked: &gtk::Widget| {
+        items.borrow().iter().find_map(|bound| {
+            let widget = bound.widget.upgrade()?;
+            (widget == *picked || picked.is_ancestor(&widget))
+                .then(|| bound.item.upgrade().map(|item| item.position()))?
+        })
+    });
     let source_index = source_index.clone();
     let view_model = section.view_model.clone();
     let source_position = Rc::new(move |position| {
         source_position_for_view(&source_index, Some(&view_model), position)
     });
-    let owner_view = section.view.clone();
+    let owner_view = section.view.downgrade();
     let clear_other_selections = Rc::new(move || {
         let Some(sections) = sections.upgrade() else {
             return;
         };
         for other in sections.borrow().iter() {
-            if other.view == owner_view {
+            if Some(&other.view) == owner_view.upgrade().as_ref() {
                 continue;
             }
             other.syncing.set(true);
@@ -4166,7 +4220,7 @@ fn install_section_context_menu(
         source_position,
         clear_other_selections,
         depth,
-    );
+    )
 }
 
 fn bitset_positions(bitset: &gtk::Bitset) -> Vec<usize> {

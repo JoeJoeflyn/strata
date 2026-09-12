@@ -48,7 +48,7 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
             .map_err(|_| "Invalid preview helper size or page".to_owned())
     };
     let (png, metadata) = match operation.as_str() {
-        "thumbnail-image" => (render_pixbuf(input, numeric_value()?.clamp(16, 256))?, None),
+        "thumbnail-image" => (render_raw(input, numeric_value()?.clamp(16, 256))?, None),
         "thumbnail-raw" => (
             render_raw_thumbnail(input, numeric_value()?.clamp(16, 256))?,
             None,

@@ -195,7 +195,7 @@ impl ListRow {
         set_label_if_changed(&self.name, pending_name.unwrap_or(&entry.display_name));
         set_label_if_changed(&self.mode, &entry_mode(entry));
         set_label_if_changed(&self.size, &entry_size(entry));
-        set_label_if_changed(&self.kind, entry_type(entry));
+        set_label_if_changed(&self.kind, &entry_type(entry));
         accessibility::describe_entry(
             item,
             pending_name.unwrap_or(&entry.display_name),

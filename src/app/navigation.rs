@@ -1391,7 +1391,7 @@ fn compare_entries(left: &FileEntry, right: &FileEntry, preferences: ViewPrefere
 
     let ordering = match preferences.sort_key {
         SortKey::Name => compare_display_names(&left.display_name, &right.display_name),
-        SortKey::Type => left.kind.cmp(&right.kind),
+        SortKey::Type => compare_entry_types(left, right),
         SortKey::Size => compare_metadata(&left.size, &right.size),
         SortKey::Modified => {
             compare_metadata(&left.modified_unix_seconds, &right.modified_unix_seconds)
@@ -1404,6 +1404,18 @@ fn compare_entries(left: &FileEntry, right: &FileEntry, preferences: ViewPrefere
     ordering
         .then_with(|| compare_display_names(&left.display_name, &right.display_name))
         .then_with(|| left.location.compare(&right.location))
+}
+
+fn compare_entry_types(left: &FileEntry, right: &FileEntry) -> Ordering {
+    use crate::services::EntryType;
+    let left_type = crate::services::entry_type(left);
+    let right_type = crate::services::entry_type(right);
+    match (&left_type, &right_type) {
+        (EntryType::Other, EntryType::Other) => Ordering::Equal,
+        (EntryType::Other, _) => Ordering::Greater,
+        (_, EntryType::Other) => Ordering::Less,
+        _ => compare_display_names(left_type.description(), right_type.description()),
+    }
 }
 
 fn compare_display_names(left: &str, right: &str) -> Ordering {

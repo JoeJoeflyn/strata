@@ -4037,16 +4037,8 @@ fn entry_size(entry: &FileEntry) -> String {
     }
 }
 
-fn entry_type(entry: &FileEntry) -> &'static str {
-    use crate::model::EntryKind;
-    match entry.kind {
-        EntryKind::Directory => "Folder",
-        EntryKind::DirectorySymbolicLink => "Folder link",
-        EntryKind::File => "File",
-        EntryKind::FileSymbolicLink => "File link",
-        EntryKind::SymbolicLink => "Broken link",
-        EntryKind::Other => "Other",
-    }
+fn entry_type(entry: &FileEntry) -> String {
+    crate::services::entry_type_description(entry)
 }
 
 fn entry_mode(entry: &FileEntry) -> String {
@@ -4091,12 +4083,14 @@ fn update_bound_list_metadata(pane: &Pane, updates: &[(usize, FileEntry)]) {
 }
 
 /// Orders empty model values first, then folders and the remaining type labels
-/// alphabetically, independently of which entries have loaded.
+/// alphabetically, with unrecognized ("Other") types last, independently of
+/// which entries have loaded.
 fn compare_type_groups(left: &str, right: &str) -> std::cmp::Ordering {
     fn rank(label: &str) -> u8 {
         match label {
             "" => 0,
             super::browser::FOLDER_TYPE_GROUP => 1,
+            super::browser::OTHER_TYPE_GROUP => 3,
             _ => 2,
         }
     }

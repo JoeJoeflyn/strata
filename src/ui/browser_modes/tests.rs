@@ -311,16 +311,20 @@ fn first_row_columns(view: &impl IsA<gtk::Widget>) -> usize {
 
 #[test]
 fn folders_lead_the_groups_and_the_rest_are_alphabetical() {
-    let mut groups = vec!["Zip archive", "Folder", "JSON document", "audio"];
+    let mut groups = vec!["Zip archive", "Folder", "Other", "JSON document", "audio"];
     groups.sort_by(|left, right| compare_type_groups(left, right));
 
-    assert_eq!(groups, ["Folder", "audio", "JSON document", "Zip archive"]);
+    assert_eq!(
+        groups,
+        ["Folder", "audio", "JSON document", "Zip archive", "Other"]
+    );
 }
 
 #[test]
 fn empty_model_values_sort_before_known_groups() {
     assert!(compare_type_groups("", "Folder").is_lt());
     assert!(compare_type_groups("", "JSON document").is_lt());
+    assert!(compare_type_groups("", "Other").is_lt());
     assert_eq!(value_type_group(""), "");
 }
 

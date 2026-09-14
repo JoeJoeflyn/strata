@@ -231,6 +231,9 @@ fn preview_drag_entries_contains_only_the_loaded_entry() {
         modified_unix_seconds: crate::model::MetadataValue::Known(1),
         mode: crate::model::MetadataValue::Unknown,
         is_hidden: false,
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
     let dragged = preview_drag_entries(Some(&entry));
     assert_eq!(dragged, Some(vec![entry]));

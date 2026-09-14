@@ -64,6 +64,9 @@ fn delete_confirmation_labels_distinguish_files_and_folders() {
         modified_unix_seconds: crate::model::MetadataValue::Unknown,
         is_hidden: false,
         mode: crate::model::MetadataValue::Unknown,
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
     let mut folder = file.clone();
     folder.kind = crate::model::EntryKind::Directory;
@@ -88,6 +91,9 @@ fn quick_preview_is_offered_only_for_supported_files() {
         modified_unix_seconds: crate::model::MetadataValue::Unknown,
         is_hidden: false,
         mode: crate::model::MetadataValue::Unknown,
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
 
     assert!(crate::ui::preview::entry_supports_quick_preview(&entry(
@@ -132,6 +138,9 @@ fn printing_is_offered_for_text_code_images_and_pdfs() {
         modified_unix_seconds: crate::model::MetadataValue::Unknown,
         mode: crate::model::MetadataValue::Unknown,
         is_hidden: false,
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
 
     for name in [
@@ -155,6 +164,9 @@ fn printing_is_offered_for_text_code_images_and_pdfs() {
     ] {
         let trashed = FileEntry {
             location: Location::uri(format!("trash:///{name}")),
+            image_dimensions: crate::model::MetadataValue::Unknown,
+            child_count: crate::model::MetadataValue::Unknown,
+            duration_seconds: crate::model::MetadataValue::Unknown,
             ..entry(name, crate::model::EntryKind::File)
         };
         assert_eq!(entry_supports_printing(&trashed), supported, "{name}");
@@ -199,6 +211,9 @@ fn entry_model_value_encodes_hidden_state_and_preserves_display_name() {
         modified_unix_seconds: crate::model::MetadataValue::Unknown,
         is_hidden: false,
         mode: crate::model::MetadataValue::Unknown,
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
     let hidden = FileEntry {
         location: Location::local("/fixture/.config"),
@@ -210,6 +225,9 @@ fn entry_model_value_encodes_hidden_state_and_preserves_display_name() {
         modified_unix_seconds: crate::model::MetadataValue::Unknown,
         is_hidden: true,
         mode: crate::model::MetadataValue::Unknown,
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
 
     let encoded_visible = entry_model_value(&visible);

@@ -41,6 +41,9 @@ fn entry_executable_policy_accepts_regular_files_and_file_links() {
         modified_unix_seconds: crate::model::MetadataValue::Unknown,
         is_hidden: false,
         mode: crate::model::MetadataValue::Known(mode),
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
 
     assert!(entry_is_regular_executable(&entry(
@@ -90,6 +93,9 @@ fn terminal_shortcut_prefers_one_selected_directory() {
         modified_unix_seconds: crate::model::MetadataValue::Unknown,
         is_hidden: false,
         mode: crate::model::MetadataValue::Unknown,
+        image_dimensions: crate::model::MetadataValue::Unknown,
+        child_count: crate::model::MetadataValue::Unknown,
+        duration_seconds: crate::model::MetadataValue::Unknown,
     };
     let directory = entry("selected", crate::model::EntryKind::Directory);
     let file = entry("notes.txt", crate::model::EntryKind::File);

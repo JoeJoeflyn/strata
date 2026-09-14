@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-use super::{ensure_rename_field, new_card, parts, rename_field, set_slot};
+use super::{details_label, ensure_rename_field, new_card, parts, rename_field, set_slot};
 use crate::test_support::gtk_test;
 use gtk::{gdk, glib, prelude::*};
 
@@ -183,6 +183,56 @@ fn new_card_has_no_rename_entry_until_needed() {
             let field = ensure_rename_field(&card).expect("rename field");
             assert!(!gtk::prelude::WidgetExt::is_visible(&field));
             assert!(rename_field(&card).is_some());
+        },
+    );
+}
+
+#[test]
+fn card_details_persist_with_rename_field_and_allocate_below_caption() {
+    gtk_test(
+        "ui::icons_cell::tests::card_details_persist_with_rename_field_and_allocate_below_caption",
+        || {
+            let card = new_card(64);
+            let (_icon, label) = parts(&card).expect("card parts");
+            label.set_text(Some("photo.png"));
+            label.set_visible(true);
+
+            let details = details_label(&card).expect("details label");
+            assert!(!details.is_visible());
+            details.set_text("1920×1080");
+            details.set_visible(true);
+
+            let window = gtk::Window::builder().child(&card).build();
+            window.present();
+            pump_frames(&card);
+
+            assert!(details.is_visible());
+            assert_eq!(details.text().as_str(), "1920×1080");
+
+            let label_bounds = label.compute_bounds(&card).expect("label bounds");
+            let details_bounds = details.compute_bounds(&card).expect("details bounds");
+            assert!(
+                details_bounds.y() >= label_bounds.y() + label_bounds.height(),
+                "details must be below filename: label={label_bounds:?}, details={details_bounds:?}"
+            );
+            assert!(
+                details_bounds.y() + details_bounds.height() <= card.height() as f32,
+                "details must stay inside card: details={details_bounds:?}, height={}",
+                card.height()
+            );
+
+            let field = ensure_rename_field(&card).expect("rename field");
+            label.set_visible(false);
+            field.set_visible(true);
+            pump_frames(&card);
+            let found_details = details_label(&card).expect("details label after rename field");
+            let field_bounds = field.compute_bounds(&card).expect("field bounds");
+            let details_bounds = found_details.compute_bounds(&card).expect("details bounds");
+            assert_eq!(found_details, details);
+            assert!(details_bounds.y() >= field_bounds.y() + field_bounds.height());
+            assert!(details_bounds.y() + details_bounds.height() <= card.height() as f32);
+
+            window.close();
         },
     );
 }

@@ -15,6 +15,9 @@ fn test_entry(name: &str, kind: EntryKind) -> FileEntry {
         size: MetadataValue::Known(100),
         modified_unix_seconds: MetadataValue::Known(1000),
         mode: MetadataValue::Known(0o644),
+        image_dimensions: MetadataValue::Unknown,
+        child_count: MetadataValue::Unknown,
+        duration_seconds: MetadataValue::Unknown,
         is_hidden: false,
     }
 }
@@ -66,7 +69,7 @@ fn mime_description_for_name_uses_shared_database() {
 }
 
 #[test]
-fn repeated_lookups_of_same_suffix_hit_cache() {
+fn filenames_with_the_same_simple_suffix_agree() {
     let first = mime_description_for_name("alpha.py");
     let second = mime_description_for_name("beta.py");
     assert_eq!(first, second);
@@ -74,9 +77,20 @@ fn repeated_lookups_of_same_suffix_hit_cache() {
 }
 
 #[test]
-fn cache_key_uses_suffix_or_full_name() {
-    assert_eq!(type_cache_key("file.tar.gz"), ".gz");
-    assert_eq!(type_cache_key("script.py"), ".py");
-    assert_eq!(type_cache_key(".hidden"), ".hidden");
-    assert_eq!(type_cache_key("no_extension"), "no_extension");
+fn cached_guesses_preserve_compound_suffixes_and_filename_globs() {
+    let names = ["file.gz", "file.tar.gz", "file.am", "Makefile.am"];
+    for reverse in [false, true] {
+        TYPE_CACHE.with_borrow_mut(HashMap::clear);
+        let mut names = names;
+        if reverse {
+            names.reverse();
+        }
+        for name in names {
+            assert_eq!(
+                mime_description_for_name(name),
+                guess_mime_description(name),
+                "{name}"
+            );
+        }
+    }
 }

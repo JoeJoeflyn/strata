@@ -58,7 +58,8 @@ pub fn mime_type_for_name(name: &str) -> EntryType {
 
 pub fn mime_description_for_name(name: &str) -> String {
     TYPE_CACHE.with_borrow_mut(|cache| {
-        let key = type_cache_key(name);
+        // MIME globs can match compound suffixes and whole names, not just extensions.
+        let key = name;
         if let Some(description) = cache.get(key) {
             return description.clone();
         }
@@ -69,13 +70,6 @@ pub fn mime_description_for_name(name: &str) -> String {
         cache.insert(key.to_owned(), description.clone());
         description
     })
-}
-
-fn type_cache_key(name: &str) -> &str {
-    match name.rfind('.') {
-        Some(position) if position > 0 => &name[position..],
-        _ => name,
-    }
 }
 
 fn guess_mime_description(name: &str) -> String {

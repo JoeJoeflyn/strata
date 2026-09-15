@@ -1074,10 +1074,14 @@ impl ViewState {
         list.add_controller(selection_keys);
 
         let weak_browser = Rc::downgrade(&self.browser);
+        let weak_state_for_activate = Rc::downgrade(self);
         let map_for_activation = map.clone();
         let search_handle_for_activate = search_handle.clone();
         let search_results_for_activate = search_results.clone();
         list.connect_activate(move |_, position| {
+            if let Some(state) = weak_state_for_activate.upgrade() {
+                state.cancel_click_rename();
+            }
             if search_handle_for_activate.borrow().is_some() {
                 activate_recursive_search_result(
                     &weak_browser,

@@ -2849,6 +2849,7 @@ impl Browser {
             self.restore_path(path);
             return;
         }
+        let is_removal = matches!(&change, DirectoryChange::Remove(_));
         let relocation = match &change {
             DirectoryChange::Move { from, entry } => Some((from.clone(), entry.location.clone())),
             _ => None,
@@ -2859,10 +2860,10 @@ impl Browser {
             .apply_directory_change(depth, watched, change);
         if let Some((splices, selected)) = application {
             self.emit(BrowserEvent::EntriesSpliced { depth, splices });
-            if selected.is_none() && self.active_depth() == Some(depth) {
+            if self.active_depth() == Some(depth) && (selected.is_none() || is_removal) {
                 self.emit(BrowserEvent::FocusChanged {
                     depth,
-                    position: None,
+                    position: selected,
                 });
             }
         }

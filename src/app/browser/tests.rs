@@ -2380,6 +2380,44 @@ fn completed_deletions_remove_entries_without_reloading_the_column() {
 }
 
 #[test]
+fn removing_the_selected_entry_from_the_active_column_focuses_the_next() {
+    let browser = Browser::new(Rc::new(FakeFileSource));
+    let parent = Location::local("/fixture");
+    browser.navigate(parent.clone());
+    browser.handle_directory_change(0, &parent, DirectoryChange::Upsert(batch_entry("alpha")));
+    browser.handle_directory_change(0, &parent, DirectoryChange::Upsert(batch_entry("bravo")));
+    browser.handle_directory_change(0, &parent, DirectoryChange::Upsert(batch_entry("charlie")));
+    browser.select(0, 1);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    browser.observe(move |event| observed.borrow_mut().push(event.clone()));
+
+    browser.handle_directory_change(
+        0,
+        &parent,
+        DirectoryChange::Remove(Location::local("/fixture/bravo")),
+    );
+
+    assert_eq!(
+        browser
+            .column_snapshot(0)
+            .expect("parent column")
+            .selected_positions,
+        [1]
+    );
+    assert!(
+        events.borrow().iter().any(|event| matches!(
+            event,
+            BrowserEvent::FocusChanged {
+                depth: 0,
+                position: Some(1)
+            }
+        )),
+        "removing the selected entry should focus the next entry"
+    );
+}
+
+#[test]
 fn file_source_can_be_replaced_without_constructing_the_ui() {
     let browser = Browser::new(Rc::new(FakeFileSource));
     let events = Rc::new(RefCell::new(Vec::new()));

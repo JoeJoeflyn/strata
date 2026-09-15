@@ -1434,7 +1434,7 @@ fn compare_entry_types(left: &FileEntry, right: &FileEntry) -> Ordering {
     }
 }
 
-fn compare_display_names(left: &str, right: &str) -> Ordering {
+pub(crate) fn compare_display_names(left: &str, right: &str) -> Ordering {
     if left.is_ascii() && right.is_ascii() {
         natural_compare(left.as_bytes(), right.as_bytes())
     } else {

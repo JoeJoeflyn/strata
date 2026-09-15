@@ -1552,6 +1552,9 @@ fn typed_entry(name: &str, kind: EntryKind) -> FileEntry {
         modified_unix_seconds: MetadataValue::Unknown,
         is_hidden: false,
         mode: MetadataValue::Unknown,
+        image_dimensions: MetadataValue::Unknown,
+        child_count: MetadataValue::Unknown,
+        duration_seconds: MetadataValue::Unknown,
     }
 }
 
@@ -1568,8 +1571,6 @@ fn type_sorting_orders_by_mime_descriptions_with_folders_first() {
         typed_entry("script.py", EntryKind::File),
     ];
 
-    // Ascending: Folders first A-Z -> Known MIME types A-Z -> Other bucket last.
-    // Inside each type: filenames always A-Z.
     let preferences_asc = ViewPreferences {
         folders_first: true,
         sort_key: SortKey::Type,
@@ -1595,8 +1596,6 @@ fn type_sorting_orders_by_mime_descriptions_with_folders_first() {
         ]
     );
 
-    // Descending: Folders first A-Z -> Other bucket first -> Known MIME types Z-A.
-    // Inside each type: filenames still A-Z.
     let preferences_desc = ViewPreferences {
         folders_first: true,
         sort_key: SortKey::Type,
@@ -1636,8 +1635,6 @@ fn type_sorting_orders_by_mime_descriptions_without_folders_first() {
         typed_entry("script.py", EntryKind::File),
     ];
 
-    // Ascending: Folders participate as "Folder" among known types A-Z -> Other bucket last.
-    // Inside each type: filenames always A-Z.
     let preferences_asc = ViewPreferences {
         folders_first: false,
         sort_key: SortKey::Type,
@@ -1663,8 +1660,6 @@ fn type_sorting_orders_by_mime_descriptions_without_folders_first() {
         ]
     );
 
-    // Descending: Other bucket first -> Known MIME types + "Folder" Z-A.
-    // Inside each type: filenames still A-Z.
     let preferences_desc = ViewPreferences {
         folders_first: false,
         sort_key: SortKey::Type,

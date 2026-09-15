@@ -273,6 +273,7 @@ fn type_groups_name_folders_and_broken_links_directly() {
 fn files_of_an_unrecognized_type_share_one_group() {
     assert_eq!(model_type_group("fv\tblob.qqqqq"), "Other");
     assert_eq!(model_type_group("fv\tarchive-index"), "Other");
+    assert_eq!(model_type_group("ov\tsocket.json"), "Other");
 }
 
 #[test]

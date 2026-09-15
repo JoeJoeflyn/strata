@@ -2,11 +2,11 @@
 
 use super::{
     BrowserDensity, BrowserMode, ClickActivation, ClickCount, LIST_COLUMN_MIN_WIDTHS,
-    SourceIndexMap, compare_type_groups, list_column_width, metadata_fill_position,
-    should_activate_filtered_pointer, should_activate_pointer_click, type_group_sorter,
-    type_groups_of, value_type_group,
+    SourceIndexMap, compare_type_groups, compare_type_groups_for_preferences, list_column_width,
+    metadata_fill_position, should_activate_filtered_pointer, should_activate_pointer_click,
+    type_group_sorter, type_groups_of, value_type_group,
 };
-use crate::model::{EntryKind, FileEntry, Location, MetadataValue};
+use crate::model::{EntryKind, FileEntry, Location, MetadataValue, SortDirection, SortKey};
 use crate::test_support::gtk_test;
 use gtk::{gio, prelude::*};
 use std::path::PathBuf;
@@ -282,6 +282,33 @@ fn folders_lead_the_groups_and_the_rest_are_alphabetical() {
 }
 
 #[test]
+fn type_groups_follow_type_direction_and_folder_preference() {
+    for folders_first in [false, true] {
+        for sort_direction in [SortDirection::Ascending, SortDirection::Descending] {
+            let preferences = crate::model::ViewPreferences {
+                sort_key: SortKey::Type,
+                sort_direction,
+                folders_first,
+                ..Default::default()
+            };
+            let mut groups = ["Other", "Type 10", "Folder", "Audio", "Type 2"];
+            groups.sort_by(|left, right| {
+                compare_type_groups_for_preferences(left, right, preferences)
+            });
+            let mut expected = vec!["Audio", "Folder", "Type 2", "Type 10", "Other"];
+            if sort_direction == SortDirection::Descending {
+                expected.reverse();
+            }
+            if folders_first {
+                expected.retain(|label| *label != "Folder");
+                expected.insert(0, "Folder");
+            }
+            assert_eq!(groups.as_slice(), expected);
+        }
+    }
+}
+
+#[test]
 fn empty_model_values_sort_before_known_groups() {
     assert!(compare_type_groups("", "Folder").is_lt());
     assert!(compare_type_groups("", "JSON document").is_lt());
@@ -328,7 +355,8 @@ fn type_group_sorter_clusters_mime_types_and_keeps_source_order_inside_a_group()
                 &value('f', "data.json"),
                 &value('f', "readme.md"),
             ]);
-            let sorted = gtk::SortListModel::new(Some(source), Some(type_group_sorter()));
+            let sorted =
+                gtk::SortListModel::new(Some(source), Some(type_group_sorter(Default::default)));
             let names: Vec<String> = (0..sorted.n_items())
                 .filter_map(|index| {
                     let value = sorted.item(index)?.downcast::<gtk::StringObject>().ok()?;

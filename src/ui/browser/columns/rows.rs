@@ -187,6 +187,9 @@ pub(super) fn column_rows(
             let dragged_item = item.downgrade();
             let map_for_drag = map_for_hover.clone();
             let prepare_row = row.downgrade();
+            let search_active_for_drag = search_active_for_factory.clone();
+            let search_results_for_drag = search_results_for_factory.clone();
+            let selection_for_drag = selection_for_rows.clone();
             drag.connect_prepare(move |source, x, y| {
                 let prepare_row = prepare_row.upgrade()?;
                 if prepare_row
@@ -198,9 +201,26 @@ pub(super) fn column_rows(
                 source.set_actions(drag_actions_for_modifiers(source.current_event_state()));
                 let state = weak_state_for_drag.upgrade()?;
                 let dragged_item = dragged_item.upgrade()?;
-                let source_position = map_for_drag.source_position(dragged_item.position())?;
-                let entry = state.browser.entry_at(depth, source_position)?;
-                let selected = state.browser.selected_entries();
+                let position = dragged_item.position();
+                let (entry, selected) = if search_active_for_drag.get() {
+                    let results = search_results_for_drag.borrow();
+                    let entry =
+                        crate::ui::browser::search_result_entry(results.get(position as usize)?);
+                    let selected = crate::ui::browser::collection::bitset_positions(
+                        &selection_for_drag.selection(),
+                    )
+                    .into_iter()
+                    .filter_map(|position| results.get(position as usize))
+                    .map(crate::ui::browser::search_result_entry)
+                    .collect();
+                    (entry, selected)
+                } else {
+                    let source_position = map_for_drag.source_position(position)?;
+                    (
+                        state.browser.entry_at(depth, source_position)?,
+                        state.browser.selected_entries(),
+                    )
+                };
                 let entries = if selected
                     .iter()
                     .any(|selected| selected.location == entry.location)
@@ -429,6 +449,16 @@ pub(super) fn column_rows(
                             .and_then(|source_position| {
                                 let entry = state.browser.entry_at(depth, source_position)?;
                                 state.browser.select(depth, source_position);
+                                if is_trash_location(&entry.location) && !entry.is_directory() {
+                                    if state.single_click_previews.get() {
+                                        return Some((
+                                            source_position,
+                                            entry.location,
+                                            PendingActivationKind::Standard { preview: true },
+                                        ));
+                                    }
+                                    return None;
+                                }
                                 Some((
                                     source_position,
                                     entry.location,
@@ -680,6 +710,9 @@ pub(super) fn column_rows(
                 .as_ref()
                 .and_then(|state| state.pending_rename_name(entry));
             label.set_label(pending_name.as_deref().unwrap_or(&entry.display_name));
+            label.set_opacity(if entry.is_hidden { 0.65 } else { 1.0 });
+        } else {
+            label.set_opacity(1.0);
         }
         let origin = entry
             .as_ref()
@@ -729,7 +762,8 @@ pub(super) fn column_rows(
             } else {
                 crate::ui::thumbnail::show_fallback_icon(&icon, entry_icon(entry), 17);
             }
-            icon.set_opacity(if entry.is_directory() { 1.0 } else { 0.72 });
+            icon.set_hidden(entry.is_hidden);
+            icon.set_base_opacity(if entry.is_directory() { 1.0 } else { 0.72 });
             chevron.set_visible(entry.is_directory());
             if mode_active
                 && let Some(state) = state.as_ref()
@@ -738,11 +772,13 @@ pub(super) fn column_rows(
             {
                 state
                     .browser
-                    .request_metadata_fill(depth, position, entry.location.clone());
+                    .request_metadata_fill(depth, position, entry.location.clone(), false);
             }
         } else {
             crate::ui::thumbnail::show_fallback_icon(&icon, crate::assets::icons::DOCUMENTS, 17);
-            icon.set_opacity(0.72);
+            icon.set_hidden(false);
+            icon.set_cut(false);
+            icon.set_base_opacity(0.72);
             chevron.set_visible(false);
         }
         let size_text = column_size_text(entry.as_ref());

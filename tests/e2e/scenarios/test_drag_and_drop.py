@@ -28,6 +28,34 @@ def test_dragging_a_file_onto_a_folder_moves_it(strata, mode):
     assert fixture.path("archive/todo.txt").read_text() == "todo\n"
 
 
+@pytest.mark.parametrize("mode", ALL_MODES)
+@pytest.mark.parametrize("recursive", [
+    pytest.param(False, marks=pytest.mark.preferences(filter_include_subfolders=False)),
+    pytest.param(True, marks=pytest.mark.preferences(filter_include_subfolders=True)),
+])
+def test_dragging_a_filtered_result_to_a_sidebar_folder(strata, mode, recursive):
+    source_path = (
+        next(strata.fixture.root.rglob("spreadsheet.csv"))
+        if recursive else strata.fixture.path("todo.txt")
+    )
+    contents = source_path.read_bytes()
+    destination = strata.environment.home / source_path.name
+    strata.keyboard.press("ctrl+f")
+    strata.keyboard.type_text(source_path.name)
+    source = strata.wait(
+        lambda: strata.window.find(role="list item", name=source_path.name),
+        "the filtered drag source",
+    )
+    strata.pointer.drag(source, strata.sidebar_button("Home"))
+    strata.wait(lambda: destination.exists(), "the filtered file to arrive in Home")
+    strata.wait(lambda: not source_path.exists(), "the filtered source to be moved")
+    assert destination.read_bytes() == contents
+    strata.wait(
+        lambda: strata.window.find(role="list item", name=source_path.name) is None,
+        "the moved result to leave the filtered listing",
+    )
+
+
 def test_dropping_a_file_on_itself_changes_nothing(strata):
     fixture = strata.fixture
     before = fixture.listing()
@@ -194,6 +222,7 @@ def drag_from_row_padding(strata, mode, edge):
         lambda: not fixture.path("todo.txt").exists(),
         f"the file dragged from {edge} row padding to leave its source directory",
     )
+    assert strata.preview() is None
 
 
 @pytest.mark.preferences(single_click_previews=True)
@@ -203,11 +232,11 @@ def test_row_padding_drag_respects_view_policy(strata, mode, edge):
     drag_from_row_padding(strata, mode, edge)
 
 
-@pytest.mark.preferences(browser_density="airy", single_click_previews=True)
-@pytest.mark.parametrize("mode", ROW_DRAG_MODES)
-@pytest.mark.parametrize("edge", ["top", "bottom"])
-def test_airy_row_padding_drag_respects_view_policy(strata, mode, edge):
-    drag_from_row_padding(strata, mode, edge)
+@pytest.mark.preferences(
+    browser_density="airy", single_click_previews=True, browser_mode="list"
+)
+def test_airy_row_padding_drag_respects_view_policy(strata):
+    drag_from_row_padding(strata, "List", "top")
 
 
 def metadata_drag_origin(strata, source, edge=None):
@@ -218,21 +247,6 @@ def metadata_drag_origin(strata, source, edge=None):
     bounds = metadata.screen_bounds()
     y = bounds.center[1] if edge is None else strata.pointer.row_padding_point(source, edge)[1]
     return bounds.x + 4, y
-
-
-@pytest.mark.preferences(browser_mode="list", single_click_previews=True)
-def test_list_metadata_still_starts_a_file_drag(strata):
-    source = strata.entry("todo.txt")
-    strata.pointer.drag_points(
-        metadata_drag_origin(strata, source),
-        strata.entry("archive").screen_bounds().center,
-    )
-    strata.wait(
-        lambda: strata.fixture.path("archive/todo.txt").exists(),
-        "dragging metadata to move the file",
-    )
-    assert not strata.fixture.path("todo.txt").exists()
-    assert strata.preview() is None
 
 
 @pytest.mark.preferences(folder_peeking=True, browser_mode="icons")

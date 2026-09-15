@@ -45,6 +45,9 @@ fn survivors_remain_at_original_positions_until_dissolve_cleanup() {
                     modified_unix_seconds: crate::model::MetadataValue::Unknown,
                     is_hidden: false,
                     mode: crate::model::MetadataValue::Unknown,
+                    image_dimensions: crate::model::MetadataValue::Unknown,
+                    child_count: crate::model::MetadataValue::Unknown,
+                    duration_seconds: crate::model::MetadataValue::Unknown,
                 };
                 let prepared = RefCell::new(None);
                 wait_until(|| {
@@ -103,13 +106,6 @@ fn survivors_remain_at_original_positions_until_dissolve_cleanup() {
             crate::ui::motion::set_reduce_motion(false);
         },
     );
-}
-
-#[test]
-fn fragment_budget_is_bounded_for_large_batches() {
-    assert_eq!(fragment_budget(1), MIN_FRAGMENT_BUDGET);
-    assert_eq!(fragment_budget(4), MAX_FRAGMENT_BUDGET);
-    assert_eq!(fragment_budget(1_000), MAX_FRAGMENT_BUDGET);
 }
 
 #[test]

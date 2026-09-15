@@ -43,7 +43,126 @@ def filter_results(strata, query="match-note", count=4, directory=None):
 
 
 @pytest.mark.parametrize("mode", ALL_MODES)
-def test_filter_text_selection_uses_the_active_theme(strata, mode, tmp_path):
+@pytest.mark.parametrize("route", ["shift", "keyboard-range", "select-all", "marquee"])
+@pytest.mark.parametrize("recursive", [
+    pytest.param(False, marks=pytest.mark.preferences(filter_include_subfolders=False)),
+    pytest.param(True, marks=pytest.mark.preferences(filter_include_subfolders=True)),
+])
+def test_filtered_results_support_group_selection(strata, mode, route, recursive):
+    count = 4 if recursive else 2
+    filter_results(strata, count=count)
+    rows = strata.window.find_all(role="list item")
+    rows = [row for row in rows if "match-note" in row.name]
+    assert len(rows) == count
+    if route == "marquee":
+        first = rows[0].screen_bounds()
+        last = rows[-1].screen_bounds()
+        strata.pointer.drag_points(
+            (last.center[0], last.y + last.height + 25),
+            (first.x + 15, first.y + 2),
+        )
+    else:
+        strata.pointer.click(rows[0], modifiers=("ctrl",))
+        if route == "shift":
+            strata.pointer.click(rows[-1], modifiers=("shift",))
+        else:
+            strata.keyboard.press("ctrl+f")
+            strata.keyboard.press("Down")
+            if route == "keyboard-range":
+                for _ in range(count - 1):
+                    strata.keyboard.press("shift+Down")
+            else:
+                strata.keyboard.press("ctrl+a")
+    strata.wait(
+        lambda: all(row.has_state("selected") for row in rows),
+        "all filtered results to be selected",
+    )
+
+
+@pytest.mark.parametrize("mode", ALL_MODES)
+@pytest.mark.parametrize("operation", ["drag", "copy"])
+def test_filtered_control_selection_operates_on_the_selected_group(strata, mode, operation):
+    filter_results(strata, query="match", count=5)
+    first = result(strata, "beta/only-match.txt")
+    second = result(strata, "match-note-other.md")
+    assert first is not None and second is not None
+    strata.pointer.click(first, modifiers=("ctrl",))
+    strata.pointer.click(second, modifiers=("ctrl",))
+    strata.pointer.click(first, modifiers=("ctrl",))
+    strata.wait(lambda: not first.has_state("selected"), "Ctrl-click to deselect a result")
+    strata.pointer.click(first, modifiers=("ctrl",))
+    strata.wait(
+        lambda: first.has_state("selected") and second.has_state("selected"),
+        "both filtered files to be selected",
+    )
+    if operation == "drag":
+        strata.pointer.drag(first, strata.sidebar_button("Home"))
+    else:
+        strata.pointer.right_click(first)
+        strata.wait(strata.context_menu, "the selected group menu")
+        assert first.has_state("selected") and second.has_state("selected")
+        strata.choose_menu_item("Copy")
+        strata.keyboard.press("ctrl+l")
+        strata.keyboard.press("ctrl+a")
+        strata.keyboard.type_text(str(strata.environment.home))
+        strata.keyboard.press("Return")
+        strata.wait_for_directory(strata.environment.home.name)
+        strata.keyboard.press("ctrl+v")
+    for path, contents in [("beta/only-match.txt", "beta source\n"),
+                           ("match-note-other.md", "other match\n")]:
+        destination = strata.environment.home / Path(path).name
+        strata.wait(lambda: destination.exists(), "the selected file to arrive in Home")
+        assert destination.read_text() == contents
+        assert strata.fixture.path(path).exists() == (operation == "copy")
+    assert strata.fixture.path("match-note.txt").read_text() == "root decoy\n"
+
+
+@pytest.mark.parametrize("mode", ALL_MODES)
+@pytest.mark.parametrize("shortcut", ["ctrl+c", "ctrl+x"])
+@pytest.mark.parametrize("hints", [
+    pytest.param(False, marks=pytest.mark.preferences(show_keybinding_hints=False)),
+    pytest.param(True, marks=pytest.mark.preferences(show_keybinding_hints=True)),
+])
+def test_filtered_keyboard_clipboard_keeps_status_visible(strata, mode, shortcut, hints):
+    filter_results(strata, query="match", count=5)
+    for path in ["beta/only-match.txt", "match-note-other.md"]:
+        row = result(strata, path)
+        assert row is not None
+        strata.pointer.click(row, modifiers=("ctrl",))
+    strata.keyboard.press(shortcut)
+    strata.wait(
+        lambda: strata.window.find(role="label", name="Files on clipboard"),
+        "the file clipboard status badge",
+    )
+    assert bool(strata.window.find(role="button", name="F1  Shortcuts")) == hints
+    assert strata.fixture.path("beta/only-match.txt").exists()
+    assert strata.fixture.path("match-note-other.md").exists()
+    strata.keyboard.press("ctrl+l")
+    strata.keyboard.press("ctrl+a")
+    strata.keyboard.type_text(str(strata.fixture.path("destination")))
+    strata.keyboard.press("Return")
+    strata.wait_for_directory("destination")
+    strata.keyboard.press("ctrl+v")
+    for path, contents in [("beta/only-match.txt", "beta source\n"),
+                           ("match-note-other.md", "other match\n")]:
+        destination = strata.fixture.path(f"destination/{Path(path).name}")
+        strata.wait(lambda: destination.exists(), "the clipboard file to arrive")
+        assert destination.read_text() == contents
+        assert strata.fixture.path(path).exists() == (shortcut == "ctrl+c")
+    assert strata.fixture.path("match-note.txt").read_text() == "root decoy\n"
+
+
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_filter_right_arrow_moves_the_text_cursor(strata, mode):
+    strata.switch_view(mode)
+    field = filter_results(strata)
+    strata.keyboard.press("Home")
+    strata.keyboard.press("Right")
+    strata.keyboard.type_text("X")
+    strata.wait(lambda: field.text == "mXatch-note", "Right to move the filter caret")
+
+
+def test_filter_text_selection_uses_the_active_theme(strata, tmp_path):
     field = filter_results(strata)
     strata.keyboard.press("ctrl+a")
     settings = tomllib.loads(strata.environment.settings_path.read_text())
@@ -228,9 +347,6 @@ def test_filtered_rename_targets_the_nested_duplicate(strata, mode, trigger, foc
     assert result(strata, "beta/match-note.txt").has_state("selected")
     assert field.text == "match-note"
     assert strata.fixture.path("beta/match-note.txt").read_text() == "beta source\n"
-    strata.keyboard.press("Delete")
-    strata.settle(result(strata, "beta/match-note.txt"))
-    assert strata.dialog() is None
     assert strata.fixture.path("match-note.txt").read_text() == "root decoy\n"
     strata.keyboard.press("F2")
     strata.wait_for_dialog()
@@ -250,6 +366,24 @@ def test_filtered_rename_targets_the_nested_duplicate(strata, mode, trigger, foc
     strata.keyboard.type_text("match-note.t")
     strata.wait(lambda: len(strata.matches()) == 2, "only the surviving matches after a query change")
     assert result(strata, "beta/match-note.txt") is None
+
+
+@pytest.mark.parametrize("mode", ALL_MODES)
+def test_delete_trashes_filtered_result_without_touching_hidden_selection(strata, mode):
+    filter_results(strata)
+    row = strata.wait(lambda: result(strata, "beta/match-note.txt"), "the beta result")
+    strata.pointer.click(row, modifiers=("ctrl",))
+    strata.keyboard.press("F2")
+    strata.wait_for_dialog()
+    strata.keyboard.press("Escape")
+    strata.wait(lambda: result(strata, "beta/match-note.txt").has_state("focused"), "result focus")
+    strata.keyboard.press("Delete")
+    strata.wait(
+        lambda: not strata.fixture.path("beta/match-note.txt").exists(),
+        "the selected result to be trashed",
+    )
+    assert strata.fixture.path("match-note.txt").read_text() == "root decoy\n"
+    assert strata.fixture.path("alpha/match-note.txt").read_text() == "alpha source\n"
 
 
 @pytest.mark.parametrize("mode", ALL_MODES)
@@ -287,10 +421,11 @@ def test_filtered_thumbnail_stays_rendered_across_updates(strata, mode, tmp_path
     assert icon is not None
 
     def thumbnail_pixel():
+        row_bounds = strata.settle(row).screen_bounds()
         bounds = icon.screen_bounds()
         capture = strata.screenshot(tmp_path / "thumbnail.png")
         with Image.open(capture) as image:
-            return image.convert("RGB").getpixel((bounds.center[0], row.screen_bounds().center[1]))
+            return image.convert("RGB").getpixel((bounds.center[0], row_bounds.center[1]))
 
     strata.wait(lambda: thumbnail_pixel() == (230, 40, 60), "the generated red thumbnail")
     for query, count in [("thumb.p", 1), ("thumb", 2)]:
@@ -298,5 +433,6 @@ def test_filtered_thumbnail_stays_rendered_across_updates(strata, mode, tmp_path
         strata.keyboard.type_text(query)
         strata.wait(lambda: len(strata.matches()) == count, "updated image results")
         assert row.has_state("selected")
-        assert thumbnail_pixel() == (230, 40, 60)
+        # AT-SPI result updates can precede the corresponding rendered frame.
+        strata.wait(lambda: thumbnail_pixel() == (230, 40, 60), "the updated red thumbnail")
         assert field.has_state("focused")

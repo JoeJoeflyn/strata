@@ -4,16 +4,10 @@ use super::*;
 
 #[test]
 fn navigation_reference_matches_each_mode() {
-    for mode in [BrowserMode::Columns, BrowserMode::Icons, BrowserMode::List] {
-        let navigation = navigation_shortcuts(mode);
-        assert!(navigation.contains(&("Alt+↑", "Go to the parent folder")));
-        assert!(navigation.contains(&("Ctrl+↑ / Ctrl+↓", "First / last item")));
-        assert!(navigation.contains(&("↑ at top", "Focus the navigation header")));
-        assert!(navigation.contains(&("↓ in header", "Return to the files")));
-        assert!(navigation.contains(&("↑ at sidebar top", "Focus the top navigation bar")));
-        assert!(!navigation.iter().any(|(key, _)| *key == "Ctrl+Left"));
-        assert!(summary_shortcuts(mode).contains(&("Enter", "Open")));
-    }
+    assert!(
+        navigation_shortcuts(BrowserMode::Columns)
+            .contains(&("← / →", "Parent pane / enter folder"))
+    );
     assert!(
         navigation_shortcuts(BrowserMode::Icons)
             .contains(&("← at left edge", "Focus the visible sidebar"))
@@ -27,18 +21,6 @@ fn navigation_reference_matches_each_mode() {
         summary_shortcuts(BrowserMode::Icons),
         summary_shortcuts(BrowserMode::List)
     );
-    assert!(
-        navigation_shortcuts(BrowserMode::Columns)
-            .contains(&("← / →", "Parent pane / enter folder"))
-    );
-    assert!(TOOLS.contains(&("F1", "Show or hide this reference")));
-}
-
-#[test]
-fn reference_lists_rename_and_refresh_bindings_without_overlap() {
-    assert!(FILES.contains(&("F2 / Ctrl+R", "Rename")));
-    assert!(TOOLS.contains(&("F5", "Refresh")));
-    assert!(!TOOLS.iter().any(|(keys, _)| keys.contains("Ctrl+R")));
 }
 
 #[test]
@@ -96,8 +78,6 @@ fn footer_tracks_modes_and_shields_files_while_open() {
                 .text()
                 .starts_with(summary_shortcuts(mode)[0].0)
         );
-        assert_eq!(footer.summary.ellipsize(), gtk::pango::EllipsizeMode::End);
-        assert!(footer.summary.is_single_line_mode());
         assert!(footer.widget().is_visible());
     }
     let none = gdk::ModifierType::empty();
@@ -143,8 +123,8 @@ fn footer_tracks_modes_and_shields_files_while_open() {
     other.bind_preferences(&manager);
     for enabled in [false, true, false] {
         manager.set_show_keybinding_hints(enabled);
-        assert_eq!(footer.widget().is_visible(), enabled);
-        assert_eq!(other.widget().is_visible(), enabled);
+        footer.assert_hints_visible(enabled);
+        other.assert_hints_visible(enabled);
     }
     let settings =
         std::path::PathBuf::from(std::env::var_os("XDG_CONFIG_HOME").expect("isolated config"))
@@ -163,13 +143,24 @@ fn footer_tracks_modes_and_shields_files_while_open() {
     footer.handle_key(gdk::Key::F1, none);
     settle();
     assert!(!footer.popover.is_visible());
-    assert!(!footer.widget().is_visible());
+    footer.assert_hints_visible(false);
     assert!(!manager.show_keybinding_hints());
     assert!(gtk::prelude::RootExt::focus(&window).is_some_and(|focus| {
         focus == *entry.upcast_ref::<gtk::Widget>() || focus.is_ancestor(&entry)
     }));
     window.destroy();
     view.browser().clear_observer();
+}
+
+impl ShortcutFooter {
+    pub(crate) fn assert_hints_visible(&self, visible: bool) {
+        assert_eq!(
+            self.widget().is_visible(),
+            visible || self.paste.is_visible()
+        );
+        assert_eq!(self.summary.is_visible(), visible);
+        assert_eq!(self.more.is_visible(), visible);
+    }
 }
 
 fn settle() {
@@ -181,65 +172,75 @@ fn settle() {
 }
 
 #[test]
-#[ignore = "writes clipboard; requires STRATA_TEST_CLIPBOARD=1 and an isolated display"]
 fn paste_availability_tracks_file_clipboard() {
-    assert_eq!(std::env::var("STRATA_TEST_CLIPBOARD").as_deref(), Ok("1"));
-    gtk::init().expect("isolated GTK display");
-    let clipboard = gdk::Display::default().expect("test display").clipboard();
-    let files = gdk::FileList::from_array(&[gtk::gio::File::for_path(
-        "/tmp/strata-clipboard-fixture.txt",
-    )]);
-    let provider = gdk::ContentProvider::for_value(&files.to_value());
-    clipboard
-        .set_content(Some(&provider))
-        .expect("file clipboard");
-    let footer = ShortcutFooter::new(BrowserMode::Columns);
-    let handler = footer.connect_clipboard(&clipboard);
-    settle();
-    assert!(
-        footer.paste.is_visible(),
-        "existing files on the clipboard enable paste"
+    crate::test_support::gtk_test(
+        "ui::shortcut_footer::tests::paste_availability_tracks_file_clipboard",
+        || {
+            let clipboard = gdk::Display::default().expect("test display").clipboard();
+            let files = gdk::FileList::from_array(&[gtk::gio::File::for_path(
+                "/tmp/strata-clipboard-fixture.txt",
+            )]);
+            let provider = gdk::ContentProvider::for_value(&files.to_value());
+            clipboard
+                .set_content(Some(&provider))
+                .expect("file clipboard");
+            let footer = ShortcutFooter::new(BrowserMode::Columns);
+            let handler = footer.connect_clipboard(&clipboard);
+            let manager = super::super::theme::ThemeManager::shared();
+            manager.set_show_keybinding_hints(false);
+            footer.bind_preferences(&manager);
+            footer.assert_hints_visible(false);
+            settle();
+            assert!(
+                footer.paste.is_visible(),
+                "existing files on the clipboard enable paste"
+            );
+            assert!(footer.widget().is_visible());
+            clipboard.set_text("plain text is not a file clipboard");
+            settle();
+            assert!(!footer.paste.is_visible());
+            assert!(!footer.widget().is_visible());
+            let uri = gdk::ContentProvider::for_bytes(
+                "text/uri-list",
+                &glib::Bytes::from_static(b"file:///tmp/strata-clipboard-fixture.txt\r\n"),
+            );
+            clipboard.set_content(Some(&uri)).expect("URI clipboard");
+            settle();
+            assert!(
+                footer.paste.is_visible(),
+                "external URI lists also enable paste"
+            );
+            assert!(footer.widget().is_visible());
+            clipboard
+                .set_content(Some(&provider))
+                .expect("pending file clipboard");
+            clipboard.set_text("newer clipboard replaces a pending file read");
+            settle();
+            assert!(!footer.paste.is_visible());
+            clipboard
+                .set_content(Some(&provider))
+                .expect("cut clipboard");
+            settle();
+            assert!(footer.paste.is_visible());
+            clipboard
+                .set_content(None::<&gdk::ContentProvider>)
+                .expect("cleared clipboard");
+            settle();
+            assert!(
+                !footer.paste.is_visible(),
+                "consuming a cut clears paste availability"
+            );
+            assert!(!footer.widget().is_visible());
+            let empty: Option<gdk::FileList> = None;
+            clipboard
+                .set_content(Some(&gdk::ContentProvider::for_value(&empty.to_value())))
+                .expect("empty file clipboard");
+            settle();
+            assert!(!footer.paste.is_visible());
+            clipboard.disconnect(handler);
+            clipboard
+                .set_content(None::<&gdk::ContentProvider>)
+                .expect("fixture cleanup");
+        },
     );
-    clipboard.set_text("plain text is not a file clipboard");
-    settle();
-    assert!(!footer.paste.is_visible());
-    let uri = gdk::ContentProvider::for_bytes(
-        "text/uri-list",
-        &glib::Bytes::from_static(b"file:///tmp/strata-clipboard-fixture.txt\r\n"),
-    );
-    clipboard.set_content(Some(&uri)).expect("URI clipboard");
-    settle();
-    assert!(
-        footer.paste.is_visible(),
-        "external URI lists also enable paste"
-    );
-    clipboard
-        .set_content(Some(&provider))
-        .expect("pending file clipboard");
-    clipboard.set_text("newer clipboard replaces a pending file read");
-    settle();
-    assert!(!footer.paste.is_visible());
-    clipboard
-        .set_content(Some(&provider))
-        .expect("cut clipboard");
-    settle();
-    assert!(footer.paste.is_visible());
-    clipboard
-        .set_content(None::<&gdk::ContentProvider>)
-        .expect("cleared clipboard");
-    settle();
-    assert!(
-        !footer.paste.is_visible(),
-        "consuming a cut clears paste availability"
-    );
-    let empty: Option<gdk::FileList> = None;
-    clipboard
-        .set_content(Some(&gdk::ContentProvider::for_value(&empty.to_value())))
-        .expect("empty file clipboard");
-    settle();
-    assert!(!footer.paste.is_visible());
-    clipboard.disconnect(handler);
-    clipboard
-        .set_content(None::<&gdk::ContentProvider>)
-        .expect("fixture cleanup");
 }

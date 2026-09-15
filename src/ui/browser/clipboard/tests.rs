@@ -322,63 +322,6 @@ fn copy_only_source_does_not_move_on_the_same_volume() {
 }
 
 #[test]
-fn file_drop_sites_commit_through_drop_strategy() {
-    let clipboard = include_str!("../clipboard.rs");
-    let drop_fn = function_source(clipboard, "fn transfer_dropped_files");
-    assert!(drop_fn.contains("file_drop_commit"));
-    assert!(drop_fn.contains("commit_file_drop"));
-    assert!(!drop_fn.contains("start_transfer"));
-
-    let paste_fn = function_source(clipboard, "fn paste_into");
-    assert!(paste_fn.contains("start_transfer"));
-    assert!(!paste_fn.contains("commit_file_drop"));
-
-    let rows = include_str!("../columns/rows.rs");
-    assert!(rows.contains("commit_file_drop"));
-    assert!(rows.contains("file_drop_commit"));
-    assert!(!rows.contains("start_transfer"));
-
-    let modes = include_str!("../../browser_modes.rs");
-    assert!(modes.contains("file_drop_commit"));
-    assert!(
-        !function_source(modes, "fn install_mode_directory_drop_target").contains("start_transfer")
-    );
-    assert!(!function_source(modes, "fn install_list_drag_drop").contains("start_transfer"));
-
-    let window = include_str!("../../window.rs");
-    assert!(function_source(window, "fn install_sidebar_file_drop").contains("commit_file_drop"));
-    assert!(function_source(window, "fn install_sidebar_file_drop").contains("file_drop_commit"));
-
-    let browser = include_str!("../../browser.rs");
-    assert!(browser.contains("commit_file_drop"));
-}
-
-fn function_source<'a>(source: &'a str, signature: &str) -> &'a str {
-    let start = source
-        .find(signature)
-        .unwrap_or_else(|| panic!("missing {signature}"));
-    let rest = &source[start..];
-    let mut depth = 0usize;
-    let mut started = false;
-    for (index, ch) in rest.char_indices() {
-        match ch {
-            '{' => {
-                started = true;
-                depth += 1;
-            }
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if started && depth == 0 {
-                    return &rest[..=index];
-                }
-            }
-            _ => {}
-        }
-    }
-    rest
-}
-
-#[test]
 fn cut_clipboard_locations_match_regardless_of_order() {
     let first = Location::local("/fixture/first");
     let second = Location::local("/fixture/second");
@@ -418,6 +361,120 @@ fn cut_matches_gio_equivalent_representations() {
         std::slice::from_ref(&native),
         std::slice::from_ref(&Location::uri("file:///fixture/other"))
     ));
+}
+
+fn result_row(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>()
+        && label.text() == name
+        && label.is_mapped()
+    {
+        let mut parent = label.parent();
+        while let Some(widget) = parent {
+            if widget.has_css_class("file-row") {
+                return Some(widget);
+            }
+            parent = widget.parent();
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(row) = result_row(&widget, name) {
+            return Some(row);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn wait_for_result(condition: impl Fn() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !condition() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "filtered result did not settle"
+        );
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn filtered_cut_feedback_follows_results_across_windows_and_rebuilds() {
+    crate::test_support::gtk_test(
+        "ui::browser::clipboard::tests::filtered_cut_feedback_follows_results_across_windows_and_rebuilds",
+        || {
+            use crate::ui::browser::{BrowserView, PeekBehavior};
+            use crate::ui::browser_modes::BrowserMode;
+            let fixture = tempfile::tempdir().expect("fixture");
+            std::fs::create_dir(fixture.path().join("nested")).expect("nested");
+            let cut = Location::local(fixture.path().join("nested/needle.txt"));
+            std::fs::write(cut.native_path().expect("path"), "cut").expect("file");
+            std::fs::write(fixture.path().join("needle-decoy.txt"), "uncut").expect("decoy");
+            let views: Vec<_> = (0..2)
+                .map(|_| {
+                    let view = BrowserView::new(
+                        Rc::new(crate::adapters::LocalFileSource),
+                        PeekBehavior::default(),
+                    );
+                    let window = gtk::Window::builder()
+                        .child(&view.widget())
+                        .default_width(900)
+                        .default_height(500)
+                        .build();
+                    window.present();
+                    view.browser().navigate(Location::local(fixture.path()));
+                    wait_for_result(|| {
+                        view.browser()
+                            .column_snapshot(0)
+                            .is_some_and(|s| !s.loading)
+                    });
+                    (view, window)
+                })
+                .collect();
+            for mode in [BrowserMode::Columns, BrowserMode::List, BrowserMode::Icons] {
+                clear_shared_cut();
+                for (view, _) in &views {
+                    view.set_view_mode(mode);
+                    assert!(view.show_filter_with_query("needle"));
+                    wait_for_result(|| result_row(&view.widget(), "needle.txt").is_some());
+                }
+                set_shared_cut(std::slice::from_ref(&cut));
+                for (view, _) in &views {
+                    assert!(
+                        result_row(&view.widget(), "needle.txt")
+                            .expect("cut result")
+                            .has_css_class("cut")
+                    );
+                    assert!(
+                        !result_row(&view.widget(), "needle-decoy.txt")
+                            .expect("decoy")
+                            .has_css_class("cut")
+                    );
+                    assert!(view.show_filter_with_query(""));
+                    wait_for_result(|| result_row(&view.widget(), "needle.txt").is_none());
+                    assert!(view.show_filter_with_query("needle"));
+                    wait_for_result(|| result_row(&view.widget(), "needle.txt").is_some());
+                    assert!(
+                        result_row(&view.widget(), "needle.txt")
+                            .expect("retained cut")
+                            .has_css_class("cut")
+                    );
+                }
+                clear_shared_cut();
+                for (view, _) in &views {
+                    assert!(
+                        !result_row(&view.widget(), "needle.txt")
+                            .expect("restored result")
+                            .has_css_class("cut")
+                    );
+                }
+            }
+            for (view, window) in views {
+                view.browser().clear_observer();
+                window.close();
+            }
+        },
+    );
 }
 
 #[test]

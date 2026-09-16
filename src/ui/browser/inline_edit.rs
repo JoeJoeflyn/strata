@@ -941,15 +941,15 @@ impl ViewState {
         self.pending_new_entry.take().is_some()
     }
 
-    /// Schedule rename mode after a slow second click on an already-selected item.
-    /// A quick double-click (or any other press, drag, or navigation) cancels it
-    /// via `cancel_click_rename` before the timeout fires.
     pub(in crate::ui) fn schedule_click_rename(
         self: &Rc<Self>,
         depth: usize,
         source_position: usize,
     ) {
         self.cancel_click_rename();
+        let Some(entry) = self.browser.entry_at(depth, source_position) else {
+            return;
+        };
         let generation = self.click_rename_generation.get() + 1;
         self.click_rename_generation.set(generation);
         let interval = self.scroller.settings().gtk_double_click_time().max(1) as u64;
@@ -960,13 +960,23 @@ impl ViewState {
                 let Some(state) = weak.upgrade() else {
                     return;
                 };
-                if state.click_rename_generation.get() != generation
-                    || state.rename_operation_pending()
+                if state.click_rename_generation.get() != generation {
+                    return;
+                }
+                state.pending_click_rename.take();
+                if state.rename_operation_pending()
                     || state.active_rename.borrow().is_some()
+                    || state.browser.selected_entries().len() != 1
+                    || !state.browser.focused_item().is_some_and(
+                        |(current_depth, position, current)| {
+                            current_depth == depth
+                                && position == source_position
+                                && current.location == entry.location
+                        },
+                    )
                 {
                     return;
                 }
-                state.browser.select(depth, source_position);
                 state.begin_rename();
             },
         );

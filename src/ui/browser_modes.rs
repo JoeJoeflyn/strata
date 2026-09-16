@@ -129,9 +129,7 @@ impl Default for ClickActivation {
     }
 }
 
-/// Per-row state shared between the selection (Capture) and activation (Bubble)
-/// click gestures so the activation gesture can tell whether a single click landed
-/// on an already-selected item — the slow-click rename trigger.
+// Capture must snapshot selection before GTK changes it for the bubble gesture.
 #[derive(Default)]
 struct SlowClickRename {
     was_selected: Cell<bool>,
@@ -3691,6 +3689,11 @@ fn install_preview_click(
                 browser.activate_in_place(depth, position);
             }
         } else if press_count == 1
+            && !modifiers.intersects(
+                gtk::gdk::ModifierType::ALT_MASK
+                    | gtk::gdk::ModifierType::SUPER_MASK
+                    | gtk::gdk::ModifierType::META_MASK,
+            )
             && slow_click.was_selected.get()
             && slow_click.selected_count_before.get() == 1
             && !browser.is_chooser_mode()

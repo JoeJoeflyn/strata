@@ -379,6 +379,8 @@ pub(super) fn column_rows(
         let rename_position_for_release = rename_position.clone();
         selection_click.connect_pressed(move |gesture, press_count, x, y| {
             pending_activation_for_press.take();
+            rename_position_for_press.set(None);
+            was_selected_for_press.set(false);
             press_moved_for_press.set(false);
             press_origin_for_press.set((x, y));
             if let Some(state) = weak_state_for_click.upgrade() {
@@ -514,8 +516,13 @@ pub(super) fn column_rows(
                     let slow_click_rename = press_count == 1
                         && selected_before
                         && selected_count_before == 1
-                        && !control
-                        && !shift
+                        && !modifiers.intersects(
+                            gtk::gdk::ModifierType::CONTROL_MASK
+                                | gtk::gdk::ModifierType::SHIFT_MASK
+                                | gtk::gdk::ModifierType::ALT_MASK
+                                | gtk::gdk::ModifierType::SUPER_MASK
+                                | gtk::gdk::ModifierType::META_MASK,
+                        )
                         && !preserve_group
                         && !activate
                         && !state.browser.is_chooser_mode()

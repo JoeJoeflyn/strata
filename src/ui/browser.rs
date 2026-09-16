@@ -569,6 +569,28 @@ impl BrowserView {
             .browser
             .observe(move |event| observer_state.handle(event));
 
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak_state = Rc::downgrade(&state);
+        click.connect_pressed(move |_, _, _, _| {
+            if let Some(state) = weak_state.upgrade() {
+                state.cancel_click_rename();
+            }
+        });
+        state.overlay.add_controller(click);
+
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak_state = Rc::downgrade(&state);
+        keys.connect_key_pressed(move |_, _, _, _| {
+            if let Some(state) = weak_state.upgrade() {
+                state.cancel_click_rename();
+            }
+            glib::Propagation::Proceed
+        });
+        state.overlay.add_controller(keys);
+
         let weak_state = Rc::downgrade(&state);
         state.location_entry.connect_activate(move |_| {
             if let Some(state) = weak_state.upgrade() {

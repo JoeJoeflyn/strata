@@ -23,6 +23,8 @@ use crate::{
 
 pub use crate::app::navigation::ColumnEntryCounts;
 
+mod deferred;
+mod directory_changes;
 mod loading;
 mod operation_events;
 mod operation_updates;
@@ -387,6 +389,14 @@ fn retain_pending_copy_items(generation: u64, locations: &[Location]) {
             created.retain(|location| locations.contains(location));
         }
     });
+}
+
+fn undo_move_parents(items: &[UndoMoveItem]) -> HashSet<Location> {
+    items
+        .iter()
+        .flat_map(|item| [&item.record.current, &item.record.original])
+        .filter_map(Location::parent)
+        .collect()
 }
 
 /// Pairs each moved source with where the transfer left it. Items that never
@@ -1645,14 +1655,7 @@ impl Browser {
         };
         retain_pending_move_items(generation, &items);
         let total = items.len();
-        let mut refresh_locations = HashSet::new();
-        for item in &items {
-            for location in [&item.record.current, &item.record.original] {
-                if let Some(parent) = location.parent() {
-                    refresh_locations.insert(parent);
-                }
-            }
-        }
+        let refresh_locations = undo_move_parents(&items);
         let request_id = self.begin_operation();
         self.transfer_operation.set(Some(true));
         self.undo_claim.replace(Some((
@@ -2223,16 +2226,7 @@ impl Browser {
                 });
             }
         }
-        if let Some(source) = self.metadata_timer.borrow_mut().take() {
-            source.remove();
-        }
-        let weak: Weak<Self> = Rc::downgrade(self);
-        let source = gio::glib::timeout_add_local_once(METADATA_FILL_DEBOUNCE, move || {
-            if let Some(browser) = weak.upgrade() {
-                browser.flush_metadata_fills();
-            }
-        });
-        *self.metadata_timer.borrow_mut() = Some(source);
+        self.schedule_metadata_fill();
     }
 
     fn request_sort_fill(
@@ -2376,58 +2370,6 @@ impl Browser {
         }
     }
 
-    fn truncate_deferred_from(self: &Rc<Self>, len: usize) {
-        if let Some(source) = self.metadata_timer.borrow_mut().take() {
-            source.remove();
-        }
-        self.metadata_pending
-            .borrow_mut()
-            .retain(|depth, _| *depth < len);
-        if !self.metadata_pending.borrow().is_empty() {
-            let weak: Weak<Self> = Rc::downgrade(self);
-            let source = gio::glib::timeout_add_local_once(METADATA_FILL_DEBOUNCE, move || {
-                if let Some(browser) = weak.upgrade() {
-                    browser.flush_metadata_fills();
-                }
-            });
-            *self.metadata_timer.borrow_mut() = Some(source);
-        }
-        self.metadata_loads
-            .borrow_mut()
-            .retain(|depth, _| *depth < len);
-        let state = self.state.borrow();
-        self.fill_tokens.borrow_mut().retain(|_, fill| {
-            fill.depth < len
-                && state.request_id_for_depth(fill.depth) == Some(fill.directory_request)
-        });
-        let awaiting = *self.sort_awaiting_fill.borrow();
-        if let Some(awaiting) = awaiting
-            && awaiting.depth >= len
-        {
-            self.abandon_awaited_sort(
-                awaiting.depth,
-                awaiting.generation,
-                MetadataOutcome::Cancelled,
-            );
-        } else {
-            self.sort_loads.borrow_mut().retain(|depth, _| *depth < len);
-        }
-        self.remote.borrow_mut().retain_depths(len);
-        self.last_batch_selection
-            .borrow_mut()
-            .retain(|depth, _| *depth < len);
-        self.staging.borrow_mut().retain(|depth, _| *depth < len);
-        self.sorting.borrow_mut().retain(|depth, _| *depth < len);
-        self.staged_publishes
-            .borrow_mut()
-            .retain(|depth, _| *depth < len);
-        if self.staged_publishes.borrow().is_empty()
-            && let Some(source) = self.publish_timer.borrow_mut().take()
-        {
-            source.remove();
-        }
-    }
-
     fn ensure_sorted_after_load(self: &Rc<Self>, depth: usize) {
         let (needs, preferences) = {
             let state = self.state.borrow();
@@ -2506,40 +2448,6 @@ impl Browser {
                 self.metadata_loads.borrow_mut().insert(depth, handle);
             }
         }
-    }
-
-    /// Drops everything a discarded load queued. Coalesced rows are safe to drop
-    /// because every site that clears loads replaces the data source wholesale;
-    /// dropping a sort's fill handle aborts provider work without a terminal event.
-    fn cancel_deferred_work(&self) {
-        if let Some(source) = self.metadata_timer.borrow_mut().take() {
-            source.remove();
-        }
-        self.metadata_pending.borrow_mut().clear();
-        self.metadata_loads.borrow_mut().clear();
-        self.fill_tokens.borrow_mut().clear();
-        let awaiting = self.sort_awaiting_fill.borrow_mut().take();
-        if let Some(awaiting) = awaiting {
-            self.abandon_awaited_sort(
-                awaiting.depth,
-                awaiting.generation,
-                MetadataOutcome::Cancelled,
-            );
-        } else {
-            self.sort_loads.borrow_mut().clear();
-            if let Some((_, depth)) = self.pending_sort.take() {
-                self.emit(BrowserEvent::SortingFinished { depth });
-            }
-        }
-        self.remote.borrow_mut().clear();
-        self.last_batch_selection.borrow_mut().clear();
-        self.staging.borrow_mut().clear();
-        self.sorting.borrow_mut().clear();
-        self.staged_publishes.borrow_mut().clear();
-        if let Some(source) = self.publish_timer.borrow_mut().take() {
-            source.remove();
-        }
-        self.cancel_remote_timer();
     }
 
     fn request_directory(
@@ -2792,83 +2700,6 @@ impl Browser {
             take_focus: true,
         });
         true
-    }
-
-    fn handle_directory_change(
-        self: &Rc<Self>,
-        depth: usize,
-        watched: &Location,
-        change: DirectoryChange,
-    ) {
-        if self.location_at(depth).as_ref() != Some(watched) {
-            return;
-        }
-        if self.deletion_operation.get() || self.restoration_operation.get() {
-            self.deferred_file_operation_changes
-                .borrow_mut()
-                .entry(depth)
-                .or_default()
-                .push((watched.clone(), change));
-            return;
-        }
-        if matches!(&change, DirectoryChange::Rescan) {
-            self.refresh_column(depth);
-            return;
-        }
-        if let Some(staging) = self.staging.borrow_mut().get_mut(&depth) {
-            match &change {
-                DirectoryChange::Remove(location) => {
-                    staging.removed.insert(location.clone());
-                }
-                DirectoryChange::Upsert(entry) => {
-                    staging.removed.remove(&entry.location);
-                }
-                DirectoryChange::Move { from, entry } => {
-                    staging.removed.insert(from.clone());
-                    staging.removed.remove(&entry.location);
-                }
-                DirectoryChange::Rescan => {}
-            }
-            staging.deltas.push((watched.clone(), change));
-            return;
-        }
-        if let Some(sorting) = self.sorting.borrow_mut().get_mut(&depth) {
-            sorting.deltas.push((watched.clone(), change));
-            return;
-        }
-        // A staged publication converges the model first: deltas splice positions
-        // that only exist past the tails.
-        self.drain_publish(depth);
-        let path_update = self
-            .state
-            .borrow()
-            .path_after_external_change(depth, &change);
-        if let Some(path) = path_update
-            && !matches!(&change, DirectoryChange::Move { .. })
-        {
-            self.restore_path(path);
-            return;
-        }
-        let relocation = match &change {
-            DirectoryChange::Move { from, entry } => Some((from.clone(), entry.location.clone())),
-            _ => None,
-        };
-        let application = self
-            .state
-            .borrow_mut()
-            .apply_directory_change(depth, watched, change);
-        if let Some((splices, selected)) = application {
-            self.emit(BrowserEvent::EntriesSpliced { depth, splices });
-            if selected.is_none() && self.active_depth() == Some(depth) {
-                self.emit(BrowserEvent::FocusChanged {
-                    depth,
-                    position: None,
-                });
-            }
-        }
-        if let Some((from, to)) = relocation {
-            self.relocate_open_columns(&from, &to);
-        }
     }
 
     fn emit(&self, event: BrowserEvent) {

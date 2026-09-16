@@ -89,9 +89,10 @@ fn same_folder_search_preview_follows_focus_after_deletion() {
             assert!(fixture.preview.is_open());
             std::fs::remove_file(&path).expect("remove previewed file");
             crate::ui::media::tests::wait(|| {
-                fixture.browser.column_snapshot(0).is_some_and(|s| {
-                    s.count == 1 && s.selected_positions == [0]
-                })
+                fixture
+                    .browser
+                    .column_snapshot(0)
+                    .is_some_and(|s| s.count == 1 && s.selected_positions == [0])
             });
             assert!(fixture.preview.is_open());
             assert!(fixture.events.borrow().is_empty());

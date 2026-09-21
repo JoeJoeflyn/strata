@@ -19,6 +19,18 @@ PREVIEW_FIXTURE = {
 
 
 @pytest.fixture
+def root(strata) -> str:
+    """The fixture directory, named explicitly.
+
+    Columns mirrors a keyboard-selected folder into the next pane, so
+    assertions name the pane they are about rather than relying on the
+    deepest one.
+    """
+
+    return strata.fixture.root.name
+
+
+@pytest.fixture
 def fixture_tree(request):
     """Replaces the shared fixture with file types the preview can render."""
 
@@ -108,7 +120,7 @@ def test_space_opens_and_closes_the_quick_preview(strata, mode, selection):
     assert strata.selected_names() == ["third.txt"]
 
 
-@pytest.mark.preferences(browser_mode="columns")
+@pytest.mark.preferences(browser_mode="columns", single_click_previews=True)
 def test_columns_keyboard_selection_opens_the_preview(strata, fixture_tree):
     strata.select_entry_with_keyboard("data.csv")
     strata.wait(
@@ -236,20 +248,20 @@ def test_preview_follows_extended_selection_without_collapsing_it(strata, mode):
 
 @pytest.mark.preferences(single_click_previews=False)
 @pytest.mark.parametrize("mode", ALL_MODES)
-def test_preview_hides_on_a_folder_and_resumes_when_selection_moves(strata, mode):
+def test_preview_hides_on_a_folder_and_resumes_when_selection_moves(strata, mode, root):
     strata.select_entry_with_keyboard("data.csv")
     strata.keyboard.press("space")
     strata.wait(lambda: strata.preview_shows("alpha"), "the file preview")
 
     strata.keyboard.press(PREVIOUS_ENTRY_KEY[mode])
 
-    strata.wait_for_selection(["folder"])
+    strata.wait_for_selection(["folder"], root)
     if mode == "Icons":
         strata.wait(lambda: strata.preview_shows("No preview for this selection"), "the folder's reserved preview space")
     else:
         strata.wait(lambda: strata.preview() is None, "the folder to dismiss the preview")
     strata.keyboard.press(NEXT_ENTRY_KEY[mode])
-    strata.wait_for_selection(["data.csv"])
+    strata.wait_for_selection(["data.csv"], root)
     strata.wait(lambda: strata.preview_shows("alpha"), "the still-enabled preview to resume")
 
 

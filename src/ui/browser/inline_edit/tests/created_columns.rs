@@ -243,12 +243,10 @@ fn folder_rename_completion_does_not_restore_selection_or_reopen_a_closed_path()
                         );
                         assert_eq!(view.browser().location_at(1), None);
                     } else {
-                        // Flush reveal callbacks queued behind the rename completion;
-                        // the file selection closed the child path and it must stay closed.
-                        for _ in 0..10 {
-                            glib::MainContext::default().iteration(false);
-                            std::thread::sleep(Duration::from_millis(2));
-                        }
+                        // The file selection closes the child path through the
+                        // debounced keyboard mirror; wait for it instead of
+                        // asserting after a fixed number of callbacks.
+                        wait_until(|| view.browser().location_at(1).is_none());
                         assert_eq!(
                             view.browser().location_at(1),
                             None,

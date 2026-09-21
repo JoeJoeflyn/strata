@@ -818,7 +818,7 @@ impl Browser {
     pub fn focus_active(&self) {
         let focus = self.state.borrow().active_focus();
         if let Some((depth, position)) = focus {
-            self.emit(BrowserEvent::FocusChanged { depth, position });
+            self.emit_suppressed_focus(depth, position);
         }
     }
 

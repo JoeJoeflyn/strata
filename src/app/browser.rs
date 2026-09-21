@@ -590,6 +590,9 @@ pub struct Browser {
     pending_sort: Cell<Option<(u64, usize)>>,
     preferences: Cell<ViewPreferences>,
     chooser_mode: Cell<bool>,
+    /// Set while emitting the refocus event after a column closes, so the
+    /// Columns-mode mirror does not reopen the folder it just truncated.
+    suppress_child_mirror: Cell<bool>,
     observers: RefCell<Vec<Observer>>,
     preferences_observers: RefCell<Vec<PreferencesObserver>>,
 }
@@ -642,6 +645,7 @@ impl Browser {
             pending_sort: Cell::new(None),
             preferences: Cell::new(preferences),
             chooser_mode: Cell::new(false),
+            suppress_child_mirror: Cell::new(false),
             observers: RefCell::new(Vec::new()),
             preferences_observers: RefCell::new(Vec::new()),
         })
@@ -864,7 +868,13 @@ impl Browser {
     }
 
     pub fn descend(self: &Rc<Self>, parent_depth: usize, location: Location) {
-        self.descend_with_selection(parent_depth, location, false);
+        self.descend_with_selection(parent_depth, location, false, false);
+    }
+
+    /// Opens `location` in the column after `parent_depth` while the parent stays
+    /// the active column — Columns-mode selection mirroring, like Finder.
+    pub fn show_child(self: &Rc<Self>, parent_depth: usize, location: Location) {
+        self.descend_with_selection(parent_depth, location, false, true);
     }
 
     fn descend_with_selection(
@@ -872,6 +882,7 @@ impl Browser {
         parent_depth: usize,
         location: Location,
         select_first_on_load: bool,
+        keep_parent_active: bool,
     ) {
         self.bump_navigation_generation();
         if self.is_open_child(parent_depth, &location) {
@@ -879,15 +890,23 @@ impl Browser {
         }
         self.close_peek();
         if location.native_path().is_some() {
-            if let Err(error) = self.source.validate_location(&location) {
-                self.emit(BrowserEvent::NavigationRejected {
+            match self.source.validate_location(&location) {
+                // The selection mirror stays quiet: the column opens and shows
+                // the load failure inline instead of raising a dialog.
+                Err(error) if !keep_parent_active => {
+                    self.emit(BrowserEvent::NavigationRejected {
+                        parent_depth,
+                        error,
+                    });
+                    self.focus_active();
+                }
+                _ => self.descend_validated(
                     parent_depth,
-                    error,
-                });
-                self.focus_active();
-                return;
+                    location,
+                    select_first_on_load,
+                    keep_parent_active,
+                ),
             }
-            self.descend_validated(parent_depth, location, select_first_on_load);
             return;
         }
 
@@ -905,18 +924,19 @@ impl Browser {
                 return;
             }
             match result {
-                Ok(()) => browser.descend_validated(
-                    parent_depth,
-                    pending_location.clone(),
-                    select_first_on_load,
-                ),
-                Err(error) => {
+                Err(error) if !keep_parent_active => {
                     browser.emit(BrowserEvent::NavigationRejected {
                         parent_depth,
                         error,
                     });
                     browser.focus_active();
                 }
+                _ => browser.descend_validated(
+                    parent_depth,
+                    pending_location.clone(),
+                    select_first_on_load,
+                    keep_parent_active,
+                ),
             }
         });
         let load = self.source.validate_location_async(location, emit);
@@ -928,6 +948,7 @@ impl Browser {
         parent_depth: usize,
         location: Location,
         select_first_on_load: bool,
+        keep_parent_active: bool,
     ) {
         if self.location_at(parent_depth).is_none() {
             return;
@@ -937,6 +958,9 @@ impl Browser {
         let mut state = self.state.borrow_mut();
         if !state.descend(parent_depth, location.clone(), request_id) {
             return;
+        }
+        if keep_parent_active {
+            state.focus_column(parent_depth);
         }
         if select_first_on_load {
             state.select_first_on_load(parent_depth + 1);
@@ -1032,7 +1056,7 @@ impl Browser {
             self.monitors.borrow_mut().truncate(len);
             self.truncate_deferred_from(len);
             self.emit(BrowserEvent::ColumnsTruncated { len });
-            self.emit(BrowserEvent::FocusChanged { depth, position });
+            self.emit_suppressed_focus(depth, position);
         }
     }
 
@@ -1044,11 +1068,20 @@ impl Browser {
             self.monitors.borrow_mut().truncate(depth);
             self.truncate_deferred_from(depth);
             self.emit(BrowserEvent::ColumnsTruncated { len: depth });
-            self.emit(BrowserEvent::FocusChanged {
-                depth: parent_depth,
-                position,
-            });
+            self.emit_suppressed_focus(parent_depth, position);
         }
+    }
+
+    /// Emits the refocus event that follows a column close with the
+    /// selection mirror suppressed so the parent folder is not reopened.
+    fn emit_suppressed_focus(&self, depth: usize, position: Option<usize>) {
+        let was = self.suppress_child_mirror.replace(true);
+        self.emit(BrowserEvent::FocusChanged { depth, position });
+        self.suppress_child_mirror.set(was);
+    }
+
+    pub(crate) fn child_mirror_suppressed(&self) -> bool {
+        self.suppress_child_mirror.get()
     }
 
     pub fn commit_peek(self: &Rc<Self>) {
@@ -2202,7 +2235,7 @@ impl Browser {
             // Do not start another asynchronous validation that can outlive inline rename.
             self.bump_navigation_generation();
             self.close_peek();
-            self.descend_validated(depth, entry.location, false);
+            self.descend_validated(depth, entry.location, false, false);
             self.select(depth, position);
         } else {
             self.close_column(depth + 1);
@@ -2310,6 +2343,12 @@ impl Browser {
         let focus = self.state.borrow_mut().focus_child();
         if let Some((depth, position)) = focus {
             self.emit(BrowserEvent::FocusChanged { depth, position });
+            if position.is_none() {
+                // The mirrored column loads unselected; entering it picks the
+                // first entry like a fresh descend.
+                self.select_first_on_load(depth);
+                self.select(depth, 0);
+            }
         }
     }
 
@@ -2335,7 +2374,7 @@ impl Browser {
             if self.is_open_child(depth, &entry.location) {
                 self.focus_child();
             } else {
-                self.descend_with_selection(depth, entry.location, select_first);
+                self.descend_with_selection(depth, entry.location, select_first, false);
             }
         } else if self.should_extract_on_activate(&entry) {
             self.emit(BrowserEvent::ExtractRequested { entry });

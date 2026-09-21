@@ -243,7 +243,17 @@ fn folder_rename_completion_does_not_restore_selection_or_reopen_a_closed_path()
                         );
                         assert_eq!(view.browser().location_at(1), None);
                     } else {
-                        wait_for_renamed(view, path, true);
+                        // Flush reveal callbacks queued behind the rename completion;
+                        // the file selection closed the child path and it must stay closed.
+                        for _ in 0..10 {
+                            glib::MainContext::default().iteration(false);
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        assert_eq!(
+                            view.browser().location_at(1),
+                            None,
+                            "rename completion must not reopen the closed child path"
+                        );
                         assert_eq!(
                             view.browser().selected_entries()[0].display_name,
                             "sibling.txt"

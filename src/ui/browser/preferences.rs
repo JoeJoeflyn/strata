@@ -56,12 +56,12 @@ impl BrowserView {
             PreferenceManager::single_click_previews,
             Self::set_single_click_previews,
         );
+        let interactive = self.state.interactive;
         self.bind_view_preference(
             manager,
-            PreferenceManager::columns_mirror_selection,
+            move |manager| interactive && manager.columns_mirror_selection(),
             Self::set_columns_mirror_selection,
         );
-        let interactive = self.state.interactive;
         self.bind_view_preference(
             manager,
             move |manager| interactive && manager.folder_peeking(),

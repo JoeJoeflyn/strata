@@ -169,6 +169,7 @@ pub(super) struct ViewState {
     peek_behavior: PeekBehavior,
     peek_enabled: Cell<bool>,
     single_click_previews: Cell<bool>,
+    columns_mirror_selection: Cell<bool>,
     multiple_selection: Rc<Cell<bool>>,
     interactive: bool,
     columns_click_activation: Cell<ClickActivation>,
@@ -507,6 +508,7 @@ impl BrowserView {
             peek_behavior,
             peek_enabled: Cell::new(true),
             single_click_previews: Cell::new(true),
+            columns_mirror_selection: Cell::new(true),
             multiple_selection,
             interactive,
             columns_click_activation: Cell::new(ClickActivation::default()),
@@ -1245,6 +1247,15 @@ impl BrowserView {
                 .mode_views
                 .borrow()
                 .single_click_previews_enabled()
+    }
+
+    pub fn set_columns_mirror_selection(&self, enabled: bool) {
+        self.state.columns_mirror_selection.set(enabled);
+    }
+
+    #[cfg(test)]
+    pub(in crate::ui) fn columns_mirror_selection_enabled(&self) -> bool {
+        self.state.columns_mirror_selection.get()
     }
 
     pub fn set_click_activation(&self, mode: BrowserMode, activation: ClickActivation) {

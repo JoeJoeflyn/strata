@@ -144,6 +144,14 @@ def test_columns_keyboard_selection_respects_disabled_previews(strata, fixture_t
     strata.wait(lambda: strata.preview_shows("alpha"), "Space to open the preview")
 
 
+@pytest.mark.preferences(browser_mode="columns", columns_mirror_selection=False)
+def test_columns_keyboard_selection_stays_put_when_mirror_is_disabled(strata, fixture_tree):
+    strata.select_entry_with_keyboard("folder")
+    strata.wait_for_selection(["folder"])
+    strata.settle(strata.entry("folder"))
+    assert len(strata.containers()) == 1
+
+
 @pytest.mark.parametrize("mode", ALL_MODES)
 @pytest.mark.parametrize("selection", ["keyboard", "pointer"])
 def test_space_previews_a_filtered_result_without_changing_the_query(strata, mode, selection):

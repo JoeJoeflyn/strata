@@ -1073,6 +1073,7 @@ impl ViewState {
             return;
         };
         if self.browser.child_mirror_suppressed()
+            || !self.columns_mirror_selection.get()
             || self.active_rename.borrow().is_some()
             || self.pending_new_entry.borrow().is_some()
             || self.mode_views.borrow().mode() != BrowserMode::Columns
@@ -1100,6 +1101,7 @@ impl ViewState {
             .is_some_and(|column| column.map.has_query());
         if filtered
             || self.browser.child_mirror_suppressed()
+            || !self.columns_mirror_selection.get()
             || self.active_rename.borrow().is_some()
             || self.pending_new_entry.borrow().is_some()
             || self.mode_views.borrow().mode() != BrowserMode::Columns

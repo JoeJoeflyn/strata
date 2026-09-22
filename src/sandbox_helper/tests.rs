@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use std::{
-    path::{Path, PathBuf},
     process::Command,
     time::{Duration, Instant},
 };
@@ -9,121 +8,10 @@ use std::{
 use gdk_pixbuf::prelude::*;
 
 use super::{
-    MediaBackend, bounded_output, bounded_output_with_timeout, bounded_surface_dimensions,
-    media_backends, media_command, read_limited, render_pixbuf, render_raw, render_raw_thumbnail,
-    run, run_media_backends, scale_embedded_thumbnail,
+    bounded_output, bounded_output_with_timeout, bounded_surface_dimensions, pdf_render_request,
+    read_limited, render_pixbuf, render_raw, render_raw_thumbnail, render_simple_dcraw, run,
+    scale_embedded_thumbnail,
 };
-use crate::sandbox::MediaPreviewBackend;
-
-fn arguments(backend: &MediaBackend) -> String {
-    media_command(backend, Path::new("/input"))
-        .get_args()
-        .map(|argument| argument.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-#[test]
-fn media_backends_are_deterministic_and_ordered() {
-    let devices = [
-        PathBuf::from("/dev/nvidiactl"),
-        PathBuf::from("/dev/dri/renderD129"),
-        PathBuf::from("/dev/nvidia0"),
-        PathBuf::from("/dev/dri/renderD128"),
-    ];
-
-    assert_eq!(
-        media_backends(&devices, MediaPreviewBackend::Automatic),
-        [
-            MediaBackend::VaApi("/dev/dri/renderD128".into()),
-            MediaBackend::VaApi("/dev/dri/renderD129".into()),
-            MediaBackend::Vulkan(0),
-            MediaBackend::Vulkan(1),
-            MediaBackend::Software,
-        ]
-    );
-    assert_eq!(
-        media_backends(&devices, MediaPreviewBackend::VaApi),
-        [
-            MediaBackend::VaApi("/dev/dri/renderD128".into()),
-            MediaBackend::VaApi("/dev/dri/renderD129".into()),
-            MediaBackend::Software,
-        ]
-    );
-    assert_eq!(
-        media_backends(&devices, MediaPreviewBackend::Vulkan),
-        [
-            MediaBackend::Vulkan(0),
-            MediaBackend::Vulkan(1),
-            MediaBackend::Software,
-        ]
-    );
-    assert_eq!(
-        media_backends(&devices, MediaPreviewBackend::Software),
-        [MediaBackend::Software]
-    );
-    assert_eq!(
-        media_backends(
-            &["/dev/nvidia0".into(), "/dev/nvidiactl".into()],
-            MediaPreviewBackend::Automatic,
-        ),
-        [MediaBackend::Vulkan(0), MediaBackend::Software]
-    );
-}
-
-#[test]
-fn hardware_failures_fall_back_and_first_success_stops() {
-    let backends = [
-        MediaBackend::VaApi("/dev/dri/renderD128".into()),
-        MediaBackend::Vulkan(0),
-        MediaBackend::Software,
-    ];
-    let mut attempts = Vec::new();
-    let result = run_media_backends(&backends, |backend| {
-        attempts.push(backend.clone());
-        match backend {
-            MediaBackend::VaApi(_) => Err(()),
-            MediaBackend::Vulkan(_) => Ok(None),
-            MediaBackend::Software => Ok(Some("software")),
-        }
-    });
-
-    assert_eq!(result, Ok("software"));
-    assert_eq!(attempts, backends);
-
-    attempts.clear();
-    let result = run_media_backends(&backends, |backend| {
-        attempts.push(backend.clone());
-        Ok::<_, ()>(matches!(backend, MediaBackend::Vulkan(_)).then_some("vulkan"))
-    });
-    assert_eq!(result, Ok("vulkan"));
-    assert_eq!(attempts, &backends[..2]);
-}
-
-#[test]
-fn final_software_failure_returns_the_normalization_error() {
-    assert_eq!(
-        run_media_backends(&[MediaBackend::Software], |_| Ok::<Option<()>, ()>(None)),
-        Err("Unable to normalize media preview".to_owned())
-    );
-}
-
-#[test]
-fn forced_backend_failure_goes_directly_to_software() {
-    for backends in [
-        media_backends(&["/dev/dri/renderD128".into()], MediaPreviewBackend::VaApi),
-        media_backends(&["/dev/dri/renderD128".into()], MediaPreviewBackend::Vulkan),
-    ] {
-        let mut attempts = Vec::new();
-        run_media_backends(&backends, |backend| {
-            attempts.push(backend.clone());
-            Ok::<_, ()>((*backend == MediaBackend::Software).then_some(()))
-        })
-        .expect("software fallback should succeed");
-        assert_eq!(attempts, backends);
-        assert_eq!(attempts.len(), 2);
-    }
-}
 
 #[test]
 fn timed_bounded_commands_stop_and_report_failure_at_their_deadline() {
@@ -152,6 +40,22 @@ fn timed_bounded_commands_stop_and_report_failure_at_their_deadline() {
         Duration::from_secs(1),
     );
     assert!(oversized.is_err());
+}
+
+#[test]
+fn pdf_preview_requests_carry_a_bounded_page_and_viewport() {
+    assert_eq!(
+        pdf_render_request("12:640x800"),
+        Ok((12, crate::sandbox::PdfRenderSize::new(640, 800)))
+    );
+    assert_eq!(
+        pdf_render_request("0:99999x1"),
+        Ok((0, crate::sandbox::PdfRenderSize::new(99999, 1)))
+    );
+    assert!(pdf_render_request("12").is_err());
+    assert!(pdf_render_request("12:0").is_err());
+    assert!(pdf_render_request("page:640x800").is_err());
+    assert!(pdf_render_request("12:wide").is_err());
 }
 
 #[test]
@@ -204,56 +108,6 @@ fn file_reads_stop_before_exceeding_the_output_limit() {
 }
 
 #[test]
-fn media_commands_select_the_backend_and_preserve_limits() {
-    for backend in [
-        MediaBackend::VaApi("/dev/dri/renderD129".into()),
-        MediaBackend::Vulkan(1),
-    ] {
-        assert!(
-            media_command(&backend, Path::new("/input"))
-                .get_envs()
-                .any(|(name, value)| name == "MALLOC_ARENA_MAX" && value == Some("1".as_ref()))
-        );
-    }
-
-    let vaapi = arguments(&MediaBackend::VaApi("/dev/dri/renderD129".into()));
-    assert!(vaapi.contains("-threads 1 -filter_threads 1"));
-    assert!(vaapi.contains("-hwaccel vaapi -hwaccel_device /dev/dri/renderD129"));
-    assert!(vaapi.contains("-hwaccel_output_format vaapi"));
-    assert!(
-        vaapi.contains(
-            "-vf scale_vaapi=w=1280:h=1280:force_original_aspect_ratio=decrease:force_divisible_by=16:format=nv12 -c:v h264_vaapi"
-        )
-    );
-    assert!(vaapi.contains("-c:a aac -b:a 96k -movflags +frag_keyframe+empty_moov -f mp4"));
-
-    let vulkan = arguments(&MediaBackend::Vulkan(1));
-    assert!(vulkan.contains("-threads 1 -filter_threads 1"));
-    assert!(vulkan.contains("-init_hw_device vulkan=vk:1 -filter_hw_device vk"));
-    assert!(vulkan.contains("-hwaccel vulkan -hwaccel_device vk"));
-    assert!(vulkan.contains(
-        "-vf scale_vulkan=w='max(16,trunc(min(iw,iw*1280/max(iw,ih))/16)*16)':h='max(16,trunc(min(ih,ih*1280/max(iw,ih))/16)*16)':format=nv12 -c:v h264_vulkan"
-    ));
-    assert!(vulkan.contains("-usage transcode -tune ull"));
-    assert!(vulkan.contains("-c:a aac -b:a 96k -movflags +frag_keyframe+empty_moov -f mp4"));
-
-    let software = arguments(&MediaBackend::Software);
-    assert!(software.contains(
-        "-vf scale=w=1280:h=1280:force_original_aspect_ratio=decrease,format=yuv420p -c:v libvpx -auto-alt-ref 0"
-    ));
-    assert!(software.contains("-threads 2 -deadline realtime -cpu-used 8"));
-    assert!(software.contains("-c:a libopus -b:a 96k -f webm"));
-
-    for command in [vaapi, vulkan, software] {
-        assert!(command.contains("-max_alloc 536870912 -max_pixels 50000000"));
-        assert!(command.contains("-map 0:v:0 -map 0:a:0? -sn -dn -t 30"));
-        assert!(command.contains("-fpsmax 30"));
-        assert!(command.contains("-b:v 2M -maxrate 3M -bufsize 4M"));
-        assert!(command.ends_with("pipe:1"));
-    }
-}
-
-#[test]
 fn embedded_thumbnails_scale_to_the_requested_size() {
     let source = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, 80, 60)
         .expect("allocate thumbnail");
@@ -272,19 +126,37 @@ fn embedded_thumbnails_scale_to_the_requested_size() {
 }
 
 #[test]
+fn image_previews_preserve_small_sources_and_bound_large_decodes() {
+    let directory = tempfile::tempdir().expect("image fixture");
+    let path = directory.path().join("image.png");
+    for (width, height, expected) in [(80, 40, (80, 40)), (1200, 600, (800, 400))] {
+        let source = gdk_pixbuf::Pixbuf::new(gdk_pixbuf::Colorspace::Rgb, false, 8, width, height)
+            .expect("source image");
+        source.fill(0x3366_99ff);
+        source.savev(&path, "png", &[]).expect("save source");
+        let png = render_raw(&path, 800).expect("render image preview");
+        let loader = gdk_pixbuf::PixbufLoader::new();
+        loader.write(&png).expect("load preview");
+        loader.close().expect("finish preview");
+        let preview = loader.pixbuf().expect("decoded preview");
+        assert_eq!((preview.width(), preview.height()), expected);
+    }
+}
+
+#[test]
 fn preview_image_uses_raw_fallbacks() {
     let directory = tempfile::tempdir().expect("tempdir");
     let input = directory.path().join("photo.ARW");
     let output = directory.path().join("result.png");
     std::fs::write(&input, b"not a camera file").expect("write stub");
 
-    let pixbuf = render_pixbuf(&input, 1400).expect_err("stub must fail pixbuf");
-    let raw = render_raw(&input, 1400);
+    let pixbuf = render_pixbuf(&input, 800).expect_err("stub must fail pixbuf");
+    let raw = render_raw(&input, 800);
     let preview = run(&[
         "preview-image".into(),
         input.to_string_lossy().into_owned(),
         output.to_string_lossy().into_owned(),
-        "1400".into(),
+        "800".into(),
         "software".into(),
     ]);
 
@@ -295,6 +167,23 @@ fn preview_image_uses_raw_fallbacks() {
             assert_eq!(preview.expect_err("stub should fail RAW fallbacks"), raw);
         }
     }
+}
+
+#[test]
+fn concurrent_raw_fallbacks_do_not_share_staging_files() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("photo.ARW");
+    std::fs::write(&input, b"not a camera file").expect("write stub");
+    let expected = render_simple_dcraw(&input, 256).expect_err("invalid RAW file");
+
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| scope.spawn(|| render_simple_dcraw(&input, 256)))
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().expect("worker"), Err(expected.clone()));
+        }
+    });
 }
 
 #[test]
@@ -315,7 +204,7 @@ fn thumbnail_raw_uses_embedded_preview_fallbacks() {
     ]);
 
     match thumbnail {
-        Ok(_) => helper.expect("thumbnail-raw should use RAW fallbacks"),
+        Ok(_) => helper.expect("thumbnail-raw should use embedded preview fallbacks"),
         Err(thumbnail) => {
             assert_ne!(pixbuf, thumbnail);
             assert_eq!(
@@ -323,5 +212,276 @@ fn thumbnail_raw_uses_embedded_preview_fallbacks() {
                 thumbnail
             );
         }
+    }
+}
+
+fn archive_list_output(
+    directory: &tempfile::TempDir,
+    input: &std::path::Path,
+    format: &str,
+    password: Option<&[u8]>,
+) -> Vec<u8> {
+    let output = directory.path().join("result.archive.json");
+    let secret =
+        password.map(|password| crate::sandbox::stage_secret_anon(password).expect("stage secret"));
+    let mut arguments = vec![
+        "archive-list".to_owned(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+        format.to_owned(),
+        "software".to_owned(),
+    ];
+    if let Some(secret) = &secret {
+        use std::os::fd::AsRawFd;
+        arguments.push(secret.as_raw_fd().to_string());
+    }
+    run(&arguments).expect("helper runs");
+    std::fs::read(&output).expect("read listing output")
+}
+
+fn decoded_archive_list(output: &[u8]) -> Result<crate::adapters::ArchiveListing, String> {
+    crate::adapters::decode_archive_listing(output)
+}
+
+fn write_tar_fixture(path: &std::path::Path, members: &[(&str, &[u8])]) {
+    let file = std::fs::File::create(path).expect("create tar");
+    let mut builder = tar::Builder::new(file);
+    for (name, contents) in members {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(contents.len() as u64);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o644);
+        builder
+            .append_data(&mut header, name, *contents)
+            .expect("append member");
+    }
+    builder.into_inner().expect("finish tar");
+}
+
+fn write_encrypted_zip_fixture(
+    directory: &tempfile::TempDir,
+    name: &str,
+    password: &str,
+) -> std::path::PathBuf {
+    use crate::{adapters::write_compression_fixture, services::ArchiveFormat};
+
+    let source = directory.path().join("folder");
+    std::fs::create_dir_all(&source).expect("create source");
+    std::fs::write(source.join("item.txt"), b"contents").expect("write source");
+    let path = directory.path().join(name);
+    write_compression_fixture(&path, &[source], ArchiveFormat::Zip, Some(password))
+        .expect("write encrypted zip");
+    path
+}
+
+#[test]
+fn archive_list_lists_plain_tar_members() {
+    use crate::adapters::ArchiveListingStatus;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("docs.tar");
+    write_tar_fixture(
+        &input,
+        &[("readme.txt", b"hi"), ("src/main.rs", b"fn main(){}")],
+    );
+    let output = archive_list_output(&directory, &input, "tar", None);
+    let listing = decoded_archive_list(&output).expect("decode listing");
+    assert_eq!(listing.status, ArchiveListingStatus::Open);
+    assert_eq!(
+        listing
+            .entries
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect::<Vec<_>>(),
+        vec!["readme.txt".to_owned(), "src/main.rs".to_owned()]
+    );
+}
+
+#[test]
+fn archive_list_needs_password_without_one() {
+    use crate::adapters::ArchiveListingStatus;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = write_encrypted_zip_fixture(&directory, "secret.zip", "s3cret");
+    let output = archive_list_output(&directory, &input, "zip", None);
+    let listing = decoded_archive_list(&output).expect("decode listing");
+    assert_eq!(listing.status, ArchiveListingStatus::NeedsPassword);
+    assert!(
+        !listing.entries.is_empty(),
+        "encrypted zip names stay listable without a password"
+    );
+}
+
+#[test]
+fn archive_list_unlocks_with_staged_password() {
+    use crate::adapters::ArchiveListingStatus;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let password = "päss wörd $HOME `id`!";
+    let input = write_encrypted_zip_fixture(&directory, "secret.zip", password);
+    let output = archive_list_output(&directory, &input, "zip", Some(password.as_bytes()));
+    let listing = decoded_archive_list(&output).expect("decode listing");
+    assert_eq!(listing.status, ArchiveListingStatus::Open);
+    assert!(
+        listing
+            .entries
+            .iter()
+            .any(|entry| entry.name == "folder/item.txt"),
+        "unicode/spaces/metacharacter password round-trips byte-exactly"
+    );
+}
+
+#[test]
+fn archive_list_rejects_wrong_and_empty_passwords() {
+    use crate::adapters::ArchiveListingStatus;
+
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = write_encrypted_zip_fixture(&directory, "secret.zip", "s3cret");
+    for password in ["wrong", ""] {
+        let output = archive_list_output(&directory, &input, "zip", Some(password.as_bytes()));
+        let listing = decoded_archive_list(&output).expect("decode listing");
+        assert_eq!(
+            listing.status,
+            ArchiveListingStatus::WrongPassword,
+            "password {password:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn archive_list_rejects_unknown_format() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("docs.tar");
+    write_tar_fixture(&input, &[("readme.txt", b"hi")]);
+    let output = directory.path().join("result.archive.json");
+    let error = run(&[
+        "archive-list".to_owned(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+        "rar".to_owned(),
+        "software".to_owned(),
+    ])
+    .expect_err("unknown format must fail");
+    assert_eq!(error, "Unknown archive format for preview.");
+    assert!(
+        !output.exists(),
+        "rejected formats must not produce an output file"
+    );
+}
+
+#[test]
+fn archive_list_rejects_overlong_password() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("docs.tar");
+    write_tar_fixture(&input, &[("readme.txt", b"hi")]);
+    let output = directory.path().join("result.archive.json");
+    let secret = crate::sandbox::stage_secret_anon(&vec![
+        b'x';
+        crate::adapters::MAX_ARCHIVE_PASSWORD_BYTES
+            + 1
+    ])
+    .expect("stage password");
+    use std::os::fd::AsRawFd;
+    let error = run(&[
+        "archive-list".to_owned(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+        "tar".to_owned(),
+        "software".to_owned(),
+        secret.as_raw_fd().to_string(),
+    ])
+    .expect_err("overlong password must fail");
+    assert_eq!(error, "Archive password is too long.");
+}
+
+#[test]
+fn archive_list_rejects_non_utf8_password() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("docs.tar");
+    write_tar_fixture(&input, &[("readme.txt", b"hi")]);
+    let output = directory.path().join("result.archive.json");
+    let secret = crate::sandbox::stage_secret_anon(&[0xFF, 0xFE]).expect("stage password");
+    use std::os::fd::AsRawFd;
+    let error = run(&[
+        "archive-list".to_owned(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+        "tar".to_owned(),
+        "software".to_owned(),
+        secret.as_raw_fd().to_string(),
+    ])
+    .expect_err("non-UTF8 password must fail");
+    assert_eq!(error, "Archive password is not valid text.");
+}
+
+#[test]
+fn archive_list_rejects_an_unreadable_secret_descriptor() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("docs.tar");
+    write_tar_fixture(&input, &[("readme.txt", b"hi")]);
+    let output = directory.path().join("result.archive.json");
+    let number = i32::MAX;
+    let error = run(&[
+        "archive-list".to_owned(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+        "tar".to_owned(),
+        "software".to_owned(),
+        number.to_string(),
+    ])
+    .expect_err("unreadable secret must fail");
+    assert!(
+        error.starts_with("Unable to read the preview secret: "),
+        "unexpected error: {error:?}"
+    );
+    assert!(
+        !output.exists(),
+        "failed listings must not produce an output file, got {error:?}"
+    );
+}
+
+#[test]
+fn archive_list_rejects_a_malformed_secret_descriptor() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("docs.tar");
+    write_tar_fixture(&input, &[("readme.txt", b"hi")]);
+    let output = directory.path().join("result.archive.json");
+    for descriptor in ["not-a-number", "-1"] {
+        let error = run(&[
+            "archive-list".to_owned(),
+            input.to_string_lossy().into_owned(),
+            output.to_string_lossy().into_owned(),
+            "tar".to_owned(),
+            "software".to_owned(),
+            descriptor.to_owned(),
+        ])
+        .expect_err("malformed descriptor must fail");
+        assert_eq!(error, "Invalid preview helper secret descriptor");
+    }
+}
+
+#[test]
+fn archive_list_rejects_a_trailing_argument_on_other_operations() {
+    let error = run(&[
+        "preview-image".to_owned(),
+        "/tmp/input".to_owned(),
+        "/tmp/output.png".to_owned(),
+        "800".to_owned(),
+        "software".to_owned(),
+        "3".to_owned(),
+    ])
+    .expect_err("extra argument must fail");
+    assert_eq!(error, "Invalid preview helper arguments");
+}
+
+#[test]
+fn archive_list_reports_corrupt_input_without_crashing() {
+    let directory = tempfile::tempdir().expect("tempdir");
+    let input = directory.path().join("junk.zip");
+    std::fs::write(&input, b"not an archive at all").expect("write junk");
+    let output = archive_list_output(&directory, &input, "zip", None);
+    match decoded_archive_list(&output) {
+        Err(message) => assert_eq!(message, crate::adapters::INVALID_ARCHIVE),
+        Ok(_) => panic!("corrupt input must not list"),
     }
 }

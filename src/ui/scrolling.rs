@@ -1,15 +1,16 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
-//! Fast scrolling shared by the browser's collection views: middle-click
-//! autoscroll and the geometry behind page-sized keyboard navigation.
+//! Scrolling shared by collection views: middle-click autoscroll, page-sized
+//! keyboard navigation, and wheel routing for transient browser panels.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::glib;
-use gtk::graphene;
 use gtk::prelude::*;
+
+pub(super) mod popover;
 
 /// Pointer travel from the anchor that is treated as "not moving yet".
 const DEAD_ZONE: f64 = 12.0;
@@ -26,8 +27,8 @@ thread_local! {
 }
 
 struct AutoScroll {
-    scroll: gtk::ScrolledWindow,
-    overlay: gtk::Overlay,
+    scroll: glib::WeakRef<gtk::ScrolledWindow>,
+    overlay: glib::WeakRef<gtk::Overlay>,
     marker: gtk::Box,
     /// Anchor and pointer in the scrolled window's coordinates, which do not move
     /// while the content scrolls underneath.
@@ -48,8 +49,8 @@ pub(super) fn install_autoscroll(scroll: &gtk::ScrolledWindow, overlay: &gtk::Ov
     overlay.add_overlay(&marker);
 
     let state = Rc::new(AutoScroll {
-        scroll: scroll.clone(),
-        overlay: overlay.clone(),
+        scroll: scroll.downgrade(),
+        overlay: overlay.downgrade(),
         marker,
         anchor: Cell::new((0.0, 0.0)),
         pointer: Cell::new((0.0, 0.0)),
@@ -88,6 +89,11 @@ pub(super) fn install_autoscroll(scroll: &gtk::ScrolledWindow, overlay: &gtk::Ov
             stop_autoscroll();
         }
     });
+    scroll.connect_destroy(move |_| {
+        if state.is_active() {
+            stop_autoscroll();
+        }
+    });
 }
 
 /// Lets any press anywhere under `root` end a running autoscroll, without
@@ -113,6 +119,17 @@ pub(super) fn stop_autoscroll() -> bool {
     true
 }
 
+impl Drop for AutoScroll {
+    fn drop(&mut self) {
+        self.stop();
+        if let Some(overlay) = self.overlay.upgrade()
+            && self.marker.parent().as_ref() == Some(overlay.upcast_ref())
+        {
+            overlay.remove_overlay(&self.marker);
+        }
+    }
+}
+
 impl AutoScroll {
     fn is_active(self: &Rc<Self>) -> bool {
         ACTIVE.with_borrow(|active| {
@@ -125,13 +142,16 @@ impl AutoScroll {
     /// Begins autoscrolling from `anchor`, reporting whether the view can scroll at
     /// all — a view that fits its viewport keeps the press for other handlers.
     fn start(self: &Rc<Self>, anchor: (f64, f64)) -> bool {
-        if !scrollable(&self.scroll.hadjustment()) && !scrollable(&self.scroll.vadjustment()) {
+        let Some(scroll) = self.scroll.upgrade() else {
+            return false;
+        };
+        if !scrollable(&scroll.hadjustment()) && !scrollable(&scroll.vadjustment()) {
             return false;
         }
         self.anchor.set(anchor);
         self.pointer.set(anchor);
         self.place_marker();
-        self.scroll.set_cursor_from_name(Some("all-scroll"));
+        scroll.set_cursor_from_name(Some("all-scroll"));
         let state = self.clone();
         let source = glib::timeout_add_local(FRAME_INTERVAL, move || {
             state.frame();
@@ -147,7 +167,9 @@ impl AutoScroll {
             source.remove();
         }
         self.marker.set_visible(false);
-        self.scroll.set_cursor(None);
+        if let Some(scroll) = self.scroll.upgrade() {
+            scroll.set_cursor(None);
+        }
     }
 
     fn track(self: &Rc<Self>, pointer: (f64, f64)) {
@@ -157,20 +179,20 @@ impl AutoScroll {
     }
 
     fn frame(&self) {
+        let Some(scroll) = self.scroll.upgrade() else {
+            return;
+        };
         let (anchor_x, anchor_y) = self.anchor.get();
         let (pointer_x, pointer_y) = self.pointer.get();
-        advance(
-            &self.scroll.hadjustment(),
-            autoscroll_step(pointer_x - anchor_x),
-        );
-        advance(
-            &self.scroll.vadjustment(),
-            autoscroll_step(pointer_y - anchor_y),
-        );
+        advance(&scroll.hadjustment(), autoscroll_step(pointer_x - anchor_x));
+        advance(&scroll.vadjustment(), autoscroll_step(pointer_y - anchor_y));
     }
 
     fn place_marker(&self) {
-        let Some(bounds) = self.scroll.compute_bounds(&self.overlay) else {
+        let (Some(scroll), Some(overlay)) = (self.scroll.upgrade(), self.overlay.upgrade()) else {
+            return;
+        };
+        let Some(bounds) = scroll.compute_bounds(&overlay) else {
             return;
         };
         let (x, y) = self.anchor.get();
@@ -200,7 +222,7 @@ fn scrollable(adjustment: &gtk::Adjustment) -> bool {
     adjustment.upper() - adjustment.lower() > adjustment.page_size()
 }
 
-fn advance(adjustment: &gtk::Adjustment, step: f64) {
+pub(super) fn advance(adjustment: &gtk::Adjustment, step: f64) {
     if step == 0.0 {
         return;
     }
@@ -246,15 +268,21 @@ pub(super) struct Page {
     distance: f64,
 }
 
-/// Brings the item a page move selected back into sight. A grouped view renders
-/// through several collection views inside one scrolling area, none of which drives
-/// the scrolling itself, so it scrolls by the distance the focus travelled instead.
+/// Brings the item a page move selected back into sight.
+///
+/// GridView's `scroll_to` uses estimated cell sizes, which lag behind a thumbnail
+/// resize or a preview split changing the column count. Pixel-scroll the viewport
+/// instead. List views still scroll by item or by distance.
 pub(super) fn reveal_selection(
     view: &gtk::Widget,
     scroll: &gtk::ScrolledWindow,
     direction: i32,
     page: &Page,
 ) {
+    if view.is::<gtk::GridView>() {
+        advance(&scroll.vadjustment(), f64::from(direction) * page.distance);
+        return;
+    }
     if scroll.child().is_some_and(|child| &child == view)
         && let Some(position) = selected_position(view)
     {
@@ -314,35 +342,88 @@ pub(super) fn page(view: &gtk::Widget, scroll: &gtk::ScrolledWindow) -> Page {
     }
 }
 
-/// Height of a realized item and the number of items per row, measured from the
-/// widgets the view currently has bound.
 fn item_geometry(view: &gtk::Widget) -> Option<(f64, usize)> {
+    if view.is::<gtk::GridView>() {
+        return grid_geometry(view);
+    }
+    list_row_geometry(view)
+}
+
+/// Grid columns follow the live allocation, so opening the preview pane or
+/// dragging the thumbnail slider changes the page immediately. Cell size comes
+/// from the card's size request / measure, not recycled allocated bounds.
+fn grid_geometry(view: &gtk::Widget) -> Option<(f64, usize)> {
+    let (col_pitch, row_pitch) = grid_cell_pitch(view)?;
+    let width = f64::from(view.width().max(0));
+    let (min_columns, max_columns) = view
+        .downcast_ref::<gtk::GridView>()
+        .map(|grid| (grid.min_columns(), grid.max_columns()))
+        .unwrap_or((1, 20));
+    let columns = grid_page_columns(width, col_pitch, min_columns, max_columns);
+    Some((row_pitch, columns))
+}
+
+fn grid_cell_pitch(view: &gtk::Widget) -> Option<(f64, f64)> {
     let mut child = view.first_child();
-    let mut first: Option<graphene::Rect> = None;
-    let mut columns = 0;
     while let Some(widget) = child {
         child = widget.next_sibling();
         if !widget.is_visible() {
             continue;
         }
-        let Some(bounds) = widget.compute_bounds(view) else {
-            continue;
-        };
-        match first {
-            None => {
-                first = Some(bounds);
-                columns = 1;
-            }
-            Some(first) => {
-                if (bounds.y() - first.y()).abs() > f32::EPSILON {
-                    break;
-                }
-                columns += 1;
-            }
+        if let Some(pitch) = cell_pitch_from_widget(&widget) {
+            return Some(pitch);
         }
     }
-    let height = f64::from(first?.height());
-    (height > 0.0).then_some((height, columns.max(1)))
+    None
+}
+
+fn cell_pitch_from_widget(widget: &gtk::Widget) -> Option<(f64, f64)> {
+    let (_, nat_w, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
+    let (_, nat_h, _, _) = widget.measure(gtk::Orientation::Vertical, -1);
+    if nat_w > 0 && nat_h > 0 {
+        return Some((f64::from(nat_w), f64::from(nat_h)));
+    }
+    let mut inner = widget.first_child();
+    while let Some(child) = inner {
+        if child.has_css_class("grid-card") {
+            let width = child.width_request();
+            let height = child.height_request();
+            if width > 0 && height > 0 {
+                return Some((f64::from(width), f64::from(height)));
+            }
+        }
+        inner = child.next_sibling();
+    }
+    None
+}
+
+fn grid_page_columns(width: f64, col_pitch: f64, min_columns: u32, max_columns: u32) -> usize {
+    let min = min_columns.max(1);
+    let max = max_columns.max(min);
+    if col_pitch <= 0.0 || width <= 0.0 {
+        return min as usize;
+    }
+    ((width / col_pitch).floor() as u32).clamp(min, max) as usize
+}
+
+fn list_row_geometry(view: &gtk::Widget) -> Option<(f64, usize)> {
+    let mut child = view.first_child();
+    while let Some(widget) = child {
+        child = widget.next_sibling();
+        if !widget.is_visible() {
+            continue;
+        }
+        let (_, nat_h, _, _) = widget.measure(gtk::Orientation::Vertical, -1);
+        if nat_h > 0 {
+            return Some((f64::from(nat_h), 1));
+        }
+        if let Some(bounds) = widget.compute_bounds(view)
+            && bounds.height() > 0.0
+        {
+            return Some((f64::from(bounds.height()), 1));
+        }
+    }
+    None
 }
 
 /// Rows to move for one page, keeping a row of overlap so the reader retains

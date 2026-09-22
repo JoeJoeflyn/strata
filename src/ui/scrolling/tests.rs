@@ -1,6 +1,52 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use super::*;
+
+#[test]
+fn retiring_an_autoscroll_view_releases_its_widgets() {
+    crate::test_support::gtk_test(
+        "ui::scrolling::tests::retiring_an_autoscroll_view_releases_its_widgets",
+        || {
+            use gtk::prelude::*;
+            for active in [false, true] {
+                let overlay = gtk::Overlay::new();
+                let scroll = gtk::ScrolledWindow::new();
+                install_autoscroll(&scroll, &overlay);
+                if active {
+                    scroll.set_vadjustment(Some(&gtk::Adjustment::new(
+                        0.0, 0.0, 1000.0, 1.0, 100.0, 100.0,
+                    )));
+                    let controllers = scroll.observe_controllers();
+                    let press = (0..controllers.n_items())
+                        .find_map(|index| {
+                            controllers.item(index).and_downcast::<gtk::GestureClick>()
+                        })
+                        .expect("autoscroll press controller");
+                    press.emit_by_name::<()>("pressed", &[&1i32, &0.0f64, &0.0f64]);
+                    assert!(ACTIVE.with_borrow(|active| active.is_some()));
+                }
+                let retired_scroll = scroll.downgrade();
+                let marker = overlay
+                    .first_child()
+                    .expect("autoscroll marker")
+                    .downgrade();
+                drop(scroll);
+                assert!(
+                    retired_scroll.upgrade().is_none(),
+                    "autoscroll retains its view"
+                );
+                assert!(
+                    marker.upgrade().is_none(),
+                    "retired autoscroll marker remains owned"
+                );
+                assert!(!stop_autoscroll(), "retired view left autoscroll running");
+                let retired_overlay = overlay.downgrade();
+                drop(overlay);
+                assert!(retired_overlay.upgrade().is_none());
+            }
+        },
+    );
+}
 
 #[test]
 fn pointer_inside_the_dead_zone_does_not_scroll() {
@@ -29,6 +75,24 @@ fn scroll_speed_is_capped_beyond_full_deflection() {
 #[test]
 fn a_page_keeps_one_row_of_overlap() {
     assert_eq!(rows_per_page(300.0, 30.0), 9);
+}
+
+#[test]
+fn grid_columns_follow_the_live_width_and_card_pitch() {
+    assert_eq!(grid_page_columns(800.0, 160.0, 1, 20), 5);
+    assert_eq!(grid_page_columns(320.0, 160.0, 1, 20), 2);
+    assert_eq!(
+        grid_page_columns(320.0, 160.0, 1, 20),
+        grid_page_columns(800.0, 400.0, 1, 20),
+        "a narrower pane and larger thumbnails both drop to two columns"
+    );
+}
+
+#[test]
+fn grid_columns_stay_within_the_view_limits() {
+    assert_eq!(grid_page_columns(8000.0, 80.0, 1, 16), 16);
+    assert_eq!(grid_page_columns(40.0, 160.0, 1, 20), 1);
+    assert_eq!(grid_page_columns(0.0, 160.0, 1, 20), 1);
 }
 
 #[test]

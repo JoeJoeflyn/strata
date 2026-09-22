@@ -1,9 +1,10 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use std::{
     fs,
     io::{self, Read},
-    path::{Path, PathBuf},
+    os::fd::RawFd,
+    path::Path,
     process::{Child, Command, Output, Stdio},
     sync::mpsc,
     thread,
@@ -13,45 +14,101 @@ use std::{
 use gdk_pixbuf::prelude::*;
 use gtk::gio;
 
-use crate::sandbox::{MAX_OUTPUT_BYTES, MediaPreviewBackend, gpu_devices, numbered_name};
+use crate::{
+    adapters::{encode_archive_result, list_archive_entries_direct},
+    sandbox::{MAX_OUTPUT_BYTES, MediaPreviewBackend, PdfRenderSize},
+    services::{ArchiveFormat, MediaPreviewSize},
+};
 
-const HARDWARE_ATTEMPT_TIME_LIMIT: Duration = Duration::from_secs(8);
-const HARDWARE_TOTAL_TIME_LIMIT: Duration = Duration::from_secs(12);
-const MEDIA_TOTAL_TIME_LIMIT: Duration = Duration::from_secs(28);
-const MAX_MEDIA_ALLOCATION_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_MEDIA_DECODE_PIXELS: u64 = 50_000_000;
+mod appimage;
+mod document_media;
+mod media;
+
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum MediaBackend {
-    VaApi(PathBuf),
-    Vulkan(usize),
-    Software,
-}
-
 pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
-    let [operation, input, output, value, media_backend] = arguments else {
+    let (arguments, start_tick) = match arguments {
+        [operation, ..] if operation == "preview-media" && arguments.len() == 6 => (
+            &arguments[..5],
+            arguments[5]
+                .parse::<u32>()
+                .map_err(|_| "Invalid media seek position".to_owned())?,
+        ),
+        _ => (arguments, 0),
+    };
+    let secret_fd = match arguments {
+        [operation, ..] if operation == "archive-list" && arguments.len() == 6 => Some(
+            arguments[5]
+                .parse::<RawFd>()
+                .ok()
+                .filter(|fd| *fd >= 0)
+                .ok_or_else(|| "Invalid preview helper secret descriptor".to_owned())?,
+        ),
+        _ if arguments.len() == 5 => None,
+        _ => return Err("Invalid preview helper arguments".to_owned()),
+    };
+    let [operation, input, output, value, media_backend] = &arguments[..5] else {
         return Err("Invalid preview helper arguments".to_owned());
     };
     let input = Path::new(input);
     let output = Path::new(output);
-    let value = value
-        .parse::<i32>()
-        .map_err(|_| "Invalid preview helper size or page".to_owned())?;
     let media_backend = MediaPreviewBackend::from_argument(media_backend)
         .ok_or_else(|| "Invalid media preview backend".to_owned())?;
-
+    if operation == "preview-media" {
+        return media::run(input, output, value, media_backend, start_tick);
+    }
+    if operation == "preview-workbook" {
+        let table = crate::services::table::read_workbook(input)?;
+        let bytes = serde_json::to_vec(&table).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+            return Err("Table output budget exceeded".into());
+        }
+        return fs::write(output, bytes).map_err(|e| e.to_string());
+    }
+    if operation == "preview-document" {
+        let document = crate::services::docx::read_document(input)?;
+        let bytes = serde_json::to_vec(&document).map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+            return Err("Document output budget exceeded".into());
+        }
+        return fs::write(output, bytes).map_err(|e| e.to_string());
+    }
+    if operation == "media-metadata" {
+        return write_media_metadata(input, output);
+    }
+    if operation == "archive-list" {
+        return run_archive_list(input, output, value, secret_fd);
+    }
+    let numeric_value = || {
+        value
+            .parse::<i32>()
+            .map_err(|_| "Invalid preview helper size or page".to_owned())
+    };
     let (png, metadata) = match operation.as_str() {
-        "thumbnail-image" => (render_pixbuf(input, value.clamp(16, 256))?, None),
-        "thumbnail-raw" => (render_raw_thumbnail(input, value.clamp(16, 256))?, None),
-        "thumbnail-pdf" => (render_pdf_thumbnail(input, value.clamp(16, 256))?, None),
-        "thumbnail-video" => (render_media(input, value.clamp(16, 256))?, None),
-        "preview-image" => (render_raw(input, 1400)?, None),
+        "thumbnail-image" => (render_raw(input, numeric_value()?.clamp(16, 256))?, None),
+        "thumbnail-raw" => (
+            render_raw_thumbnail(input, numeric_value()?.clamp(16, 256))?,
+            None,
+        ),
+        "thumbnail-pdf" => (
+            render_pdf_thumbnail(input, numeric_value()?.clamp(16, 256))?,
+            None,
+        ),
+        "thumbnail-video" => (render_media(input, numeric_value()?.clamp(16, 256))?, None),
+        "thumbnail-appimage" => (
+            appimage::render(input, numeric_value()?.clamp(16, 256))?,
+            None,
+        ),
+        "preview-image" => (render_raw(input, 800)?, None),
+        "document-image" => (document_media::image(input)?, None),
+        "document-mermaid" => (document_media::mermaid(input)?, None),
+        "document-math" => (document_media::math(input, true)?, None),
+        "document-inline-math" => (document_media::math(input, false)?, None),
         "preview-pdf" => {
-            let (png, page, pages) = render_pdf_page(input, value)?;
+            let (page, size) = pdf_render_request(value)?;
+            let (png, page, pages) = render_pdf_page(input, page, size)?;
             (png, Some(format!("{page} {pages}")))
         }
-        "preview-media" => (render_media_preview(input, media_backend)?, None),
         _ => return Err("Unknown preview helper operation".to_owned()),
     };
     fs::write(output, png).map_err(|error| error.to_string())?;
@@ -62,15 +119,143 @@ pub(crate) fn run(arguments: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+fn run_archive_list(
+    input: &Path,
+    output: &Path,
+    format: &str,
+    secret_fd: Option<RawFd>,
+) -> Result<(), String> {
+    use crate::adapters::MAX_ARCHIVE_PASSWORD_BYTES;
+
+    let format = match format {
+        "zip" => ArchiveFormat::Zip,
+        "7z" => ArchiveFormat::SevenZ,
+        "tar" => ArchiveFormat::Tar,
+        "tar.gz" => ArchiveFormat::TarGz,
+        _ => return Err("Unknown archive format for preview.".to_owned()),
+    };
+    let password = match secret_fd {
+        None => None,
+        Some(descriptor) => {
+            let secret = read_secret_fd(descriptor)?;
+            if secret.len() > MAX_ARCHIVE_PASSWORD_BYTES {
+                return Err("Archive password is too long.".to_owned());
+            }
+            Some(
+                String::from_utf8(secret)
+                    .map_err(|_| "Archive password is not valid text.".to_owned())?,
+            )
+        }
+    };
+    // The parent cancels the helper by terminating its process group.
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let result = list_archive_entries_direct(input, format, password.as_deref(), &cancelled);
+    fs::write(output, encode_archive_result(&result)).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+// Reopen to read from offset zero without changing the inherited description's offset.
+fn read_secret_fd(descriptor: RawFd) -> Result<Vec<u8>, String> {
+    let mut secret = Vec::new();
+    fs::File::open(format!("/proc/self/fd/{descriptor}"))
+        .and_then(|file| {
+            file.take(crate::adapters::MAX_ARCHIVE_PASSWORD_BYTES as u64 + 1)
+                .read_to_end(&mut secret)
+        })
+        .map_err(|error| format!("Unable to read the preview secret: {error}"))?;
+    Ok(secret)
+}
+
+fn write_media_metadata(input: &Path, output: &Path) -> Result<(), String> {
+    fs::write(output, read_media_metadata(input)?).map_err(|error| error.to_string())
+}
+
+fn read_media_metadata(input: &Path) -> Result<Vec<u8>, String> {
+    let probe = bounded_output_with_timeout(
+        Command::new("ffprobe")
+            .args([
+                "-v", "error", "-threads", "1", "-show_entries",
+                "stream=codec_type,codec_name,width,height,duration,avg_frame_rate,r_frame_rate,sample_rate,channels:stream_disposition=attached_pic:stream_side_data=rotation:format=duration,bit_rate",
+                "-of", "json",
+            ])
+            .arg(input),
+        crate::sandbox::metadata::MAX_METADATA_BYTES,
+        Duration::from_secs(4),
+    );
+    let bytes = match probe {
+        Ok(Some(result)) if result.status.success() => result.stdout,
+        _ => {
+            let (_, width, height) = gdk_pixbuf::Pixbuf::file_info(input)
+                .filter(|(_, width, height)| *width > 0 && *height > 0)
+                .ok_or("Unable to inspect media")?;
+            serde_json::to_vec(&serde_json::json!({
+                "streams": [{"codec_type": "video", "width": width, "height": height}]
+            }))
+            .map_err(|error| error.to_string())?
+        }
+    };
+    Ok(bytes)
+}
+
+pub(crate) fn browser_render(
+    input: &Path,
+    operation: crate::sandbox::browser::wire::Operation,
+) -> crate::sandbox::browser::wire::Response {
+    use crate::sandbox::browser::wire::{Operation, Response};
+    let mut response = Response::default();
+    let dimensions = || {
+        gdk_pixbuf::Pixbuf::file_info(input)
+            .filter(|(_, width, height)| *width > 0 && *height > 0)
+            .map(|(_, width, height)| (width, height))
+    };
+    let encode_dimensions = |(width, height)| {
+        serde_json::to_vec(&serde_json::json!({
+            "streams": [{"codec_type": "video", "width": width, "height": height}]
+        }))
+        .unwrap_or_default()
+    };
+    match operation {
+        Operation::Image => {
+            if let Some(size) = dimensions() {
+                response.metadata = encode_dimensions(size);
+                response.png =
+                    render_pixbuf(input, 256.min(size.0.max(size.1))).unwrap_or_default();
+            }
+            if response.png.is_empty() {
+                response.png = render_imagemagick(input, 256)
+                    .or_else(|_| render_dcraw(input, 256))
+                    .unwrap_or_default();
+            }
+        }
+        Operation::Raw => response.png = render_raw_thumbnail(input, 256).unwrap_or_default(),
+        Operation::Pdf => response.png = render_pdf_thumbnail(input, 256).unwrap_or_default(),
+        Operation::Video => response.png = render_media(input, 256).unwrap_or_default(),
+        Operation::ImageMetadata => {
+            response.metadata = dimensions()
+                .map(encode_dimensions)
+                .or_else(|| read_media_metadata(input).ok())
+                .unwrap_or_default();
+        }
+        Operation::MediaMetadata => {
+            response.metadata = read_media_metadata(input).unwrap_or_default()
+        }
+    }
+    response
+}
+
 fn render_pixbuf(path: &Path, size: i32) -> Result<Vec<u8>, String> {
     gdk_pixbuf::Pixbuf::from_file_at_scale(path, size, size, true)
         .map_err(|error| error.to_string())?
-        .save_to_bufferv("png", &[])
+        .save_to_bufferv("png", &[("compression", "1")])
         .map_err(|error| error.to_string())
 }
 
 fn render_raw(path: &Path, size: i32) -> Result<Vec<u8>, String> {
-    render_pixbuf(path, size)
+    // Preserve small sources so the preview can bound upscaling by their native dimensions.
+    gdk_pixbuf::Pixbuf::file_info(path)
+        .filter(|(_, width, height)| *width > 0 && *height > 0)
+        .ok_or_else(|| "Unable to read image dimensions".to_owned())
+        .and_then(|(_, width, height)| render_pixbuf(path, size.min(width.max(height))))
         .or_else(|_| render_imagemagick(path, size))
         .or_else(|_| render_dcraw(path, size))
 }
@@ -88,7 +273,7 @@ fn render_imagemagick(path: &Path, size: i32) -> Result<Vec<u8>, String> {
             Command::new(executable)
                 .arg(path)
                 .args(["-auto-orient", "-thumbnail"])
-                .arg(format!("{size}x{size}"))
+                .arg(format!("{size}x{size}>"))
                 .arg("png:-"),
             MAX_OUTPUT_BYTES,
         );
@@ -122,12 +307,12 @@ fn render_simple_dcraw(path: &Path, size: i32) -> Result<Vec<u8>, String> {
     use std::os::unix::fs::symlink;
 
     // Writes `<file>.thumb.jpg` next to the input, which is a read-only bind.
-    let staging = Path::new("/tmp/raw-thumb");
-    let _ = fs::remove_file(staging);
-    symlink(path, staging).map_err(|error| error.to_string())?;
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let staging = directory.path().join("raw-thumb");
+    symlink(path, &staging).map_err(|error| error.to_string())?;
     let status = Command::new("simple_dcraw")
         .arg("-e")
-        .arg(staging)
+        .arg(&staging)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -136,8 +321,8 @@ fn render_simple_dcraw(path: &Path, size: i32) -> Result<Vec<u8>, String> {
     if !status.success() {
         return Err("simple_dcraw failed".to_owned());
     }
-    for thumb in ["/tmp/raw-thumb.thumb.jpg", "/tmp/raw-thumb.thumb.ppm"] {
-        let Ok(file) = fs::File::open(thumb) else {
+    for thumb in ["raw-thumb.thumb.jpg", "raw-thumb.thumb.ppm"] {
+        let Ok(file) = fs::File::open(directory.path().join(thumb)) else {
             continue;
         };
         let Ok(data) = read_limited(file, MAX_OUTPUT_BYTES) else {
@@ -174,7 +359,7 @@ fn scale_embedded_thumbnail(data: &[u8], size: i32) -> Result<Vec<u8>, String> {
             gdk_pixbuf::InterpType::Bilinear,
         )
         .ok_or_else(|| "Unable to scale embedded RAW thumbnail".to_owned())?
-        .save_to_bufferv("png", &[])
+        .save_to_bufferv("png", &[("compression", "1")])
         .map_err(|error| error.to_string())
 }
 
@@ -192,7 +377,11 @@ fn render_pdf_thumbnail(path: &Path, size: i32) -> Result<Vec<u8>, String> {
     )
 }
 
-fn render_pdf_page(path: &Path, requested_page: i32) -> Result<(Vec<u8>, i32, i32), String> {
+fn render_pdf_page(
+    path: &Path,
+    requested_page: i32,
+    size: PdfRenderSize,
+) -> Result<(Vec<u8>, i32, i32), String> {
     let uri = gio::File::for_path(path).uri();
     let document = poppler::Document::from_file(&uri, None).map_err(|error| error.to_string())?;
     let pages = document.n_pages();
@@ -203,7 +392,14 @@ fn render_pdf_page(path: &Path, requested_page: i32) -> Result<(Vec<u8>, i32, i3
     let page = document
         .page(page_index)
         .ok_or_else(|| "Unable to load that PDF page".to_owned())?;
-    let png = render_pdf_surface(&page, 1400.0, 1800.0, 2_500_000.0)?;
+    let size = PdfRenderSize::new(size.width, size.height);
+    let (_, _, max_pixels) = size.image_limits();
+    let png = render_pdf_surface(
+        &page,
+        f64::from(size.width),
+        f64::from(size.height),
+        max_pixels as f64,
+    )?;
     Ok((png, page_index, pages))
 }
 
@@ -253,181 +449,37 @@ fn bounded_surface_dimensions(
     (width, height, scale)
 }
 
-fn render_media_preview(path: &Path, policy: MediaPreviewBackend) -> Result<Vec<u8>, String> {
-    let backends = media_backends(&gpu_devices(Path::new("/dev"), policy), policy);
-    let started = Instant::now();
-    let hardware_started = Instant::now();
-    run_media_backends(&backends, |backend| {
-        let total_remaining = MEDIA_TOTAL_TIME_LIMIT.saturating_sub(started.elapsed());
-        let timeout = if *backend == MediaBackend::Software {
-            total_remaining
-        } else {
-            let hardware_remaining =
-                HARDWARE_TOTAL_TIME_LIMIT.saturating_sub(hardware_started.elapsed());
-            HARDWARE_ATTEMPT_TIME_LIMIT
-                .min(hardware_remaining)
-                .min(total_remaining)
-        };
-        let mut command = media_command(backend, path);
-        bounded_output_with_timeout(&mut command, MAX_OUTPUT_BYTES, timeout).map(|result| {
-            result.and_then(|output| {
-                (output.status.success() && !output.stdout.is_empty()).then_some(output.stdout)
-            })
-        })
-    })
-}
-
-fn media_backends(devices: &[PathBuf], policy: MediaPreviewBackend) -> Vec<MediaBackend> {
-    let mut render_nodes: Vec<_> = devices
-        .iter()
-        .filter(|device| {
-            device
-                .file_name()
-                .is_some_and(|name| numbered_name(name, "renderD"))
-        })
-        .cloned()
-        .collect();
-    render_nodes.sort();
-    let nvidia_devices = devices
-        .iter()
-        .filter(|device| {
-            device
-                .file_name()
-                .is_some_and(|name| numbered_name(name, "nvidia"))
-        })
-        .count();
-    let vulkan_devices = render_nodes.len().max(nvidia_devices);
-    let mut backends = Vec::new();
-    if matches!(
-        policy,
-        MediaPreviewBackend::Automatic | MediaPreviewBackend::VaApi
-    ) {
-        backends.extend(render_nodes.into_iter().map(MediaBackend::VaApi));
-    }
-    if matches!(
-        policy,
-        MediaPreviewBackend::Automatic | MediaPreviewBackend::Vulkan
-    ) {
-        backends.extend((0..vulkan_devices).map(MediaBackend::Vulkan));
-    }
-    backends.push(MediaBackend::Software);
-    backends
-}
-
-fn media_command(backend: &MediaBackend, path: &Path) -> Command {
-    let mut command = Command::new("ffmpeg");
-    command
-        .args(["-nostdin", "-v", "error", "-max_alloc"])
-        .arg(MAX_MEDIA_ALLOCATION_BYTES.to_string())
-        .arg("-max_pixels")
-        .arg(MAX_MEDIA_DECODE_PIXELS.to_string());
-    match backend {
-        MediaBackend::VaApi(device) => {
-            command
-                .env("MALLOC_ARENA_MAX", "1")
-                .args([
-                    "-threads",
-                    "1",
-                    "-filter_threads",
-                    "1",
-                    "-hwaccel",
-                    "vaapi",
-                    "-hwaccel_device",
-                ])
-                .arg(device)
-                .args(["-hwaccel_output_format", "vaapi"]);
-        }
-        MediaBackend::Vulkan(index) => {
-            command
-                .env("MALLOC_ARENA_MAX", "1")
-                .args(["-threads", "1", "-filter_threads", "1", "-init_hw_device"])
-                .arg(format!("vulkan=vk:{index}"))
-                .args([
-                    "-filter_hw_device",
-                    "vk",
-                    "-hwaccel",
-                    "vulkan",
-                    "-hwaccel_device",
-                    "vk",
-                    "-hwaccel_output_format",
-                    "vulkan",
-                ]);
-        }
-        MediaBackend::Software => {
-            command.args(["-threads", "2"]);
-        }
-    }
-    command
-        .arg("-i")
-        .arg(path)
-        .args(["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-t", "30"]);
-    match backend {
-        MediaBackend::VaApi(_) => {
-            command.args([
-                "-vf",
-                "scale_vaapi=w=1280:h=1280:force_original_aspect_ratio=decrease:force_divisible_by=16:format=nv12",
-                "-c:v",
-                "h264_vaapi",
-            ]);
-        }
-        MediaBackend::Vulkan(_) => {
-            command.args([
-                "-vf",
-                "scale_vulkan=w='max(16,trunc(min(iw,iw*1280/max(iw,ih))/16)*16)':h='max(16,trunc(min(ih,ih*1280/max(iw,ih))/16)*16)':format=nv12",
-                "-c:v",
-                "h264_vulkan",
-                "-usage",
-                "transcode",
-                "-tune",
-                "ull",
-            ]);
-        }
-        MediaBackend::Software => {
-            command.args([
-                "-vf",
-                "scale=w=1280:h=1280:force_original_aspect_ratio=decrease,format=yuv420p",
-                "-c:v",
-                "libvpx",
-                "-auto-alt-ref",
-                "0",
-                "-threads",
-                "2",
-                "-deadline",
-                "realtime",
-                "-cpu-used",
-                "8",
-            ]);
-        }
-    }
-    command.args(["-fpsmax", "30"]);
-    command.args(["-b:v", "2M", "-maxrate", "3M", "-bufsize", "4M"]);
-    match backend {
-        MediaBackend::Software => command.args(["-c:a", "libopus", "-b:a", "96k", "-f", "webm"]),
-        MediaBackend::VaApi(_) | MediaBackend::Vulkan(_) => command.args([
-            "-c:a",
-            "aac",
-            "-b:a",
-            "96k",
-            "-movflags",
-            "+frag_keyframe+empty_moov",
-            "-f",
-            "mp4",
-        ]),
+fn pdf_render_request(value: &str) -> Result<(i32, PdfRenderSize), String> {
+    let (page, dimensions) = value
+        .split_once(':')
+        .ok_or_else(|| "Invalid PDF preview request".to_owned())?;
+    let page = page
+        .parse::<i32>()
+        .map_err(|_| "Invalid PDF preview page".to_owned())?;
+    let (width, height) = dimensions
+        .split_once('x')
+        .ok_or_else(|| "Invalid PDF preview dimensions".to_owned())?;
+    let parse = |dimension: &str| {
+        dimension
+            .parse::<i32>()
+            .map_err(|_| "Invalid PDF preview dimensions".to_owned())
     };
-    command.arg("pipe:1");
-    command
+    Ok((page, PdfRenderSize::new(parse(width)?, parse(height)?)))
 }
 
-fn run_media_backends<T, E>(
-    backends: &[MediaBackend],
-    mut run: impl FnMut(&MediaBackend) -> Result<Option<T>, E>,
-) -> Result<T, String> {
-    for backend in backends {
-        if let Ok(Some(output)) = run(backend) {
-            return Ok(output);
-        }
+fn media_preview_size(value: &str) -> Result<MediaPreviewSize, String> {
+    if value == "0" {
+        return Ok(MediaPreviewSize::new(1280, 1280));
     }
-    Err("Unable to normalize media preview".to_owned())
+    let (width, height) = value
+        .split_once('x')
+        .ok_or_else(|| "Invalid media preview dimensions".to_owned())?;
+    let parse = |dimension: &str| {
+        dimension
+            .parse::<i32>()
+            .map_err(|_| "Invalid media preview dimensions".to_owned())
+    };
+    Ok(MediaPreviewSize::new(parse(width)?, parse(height)?))
 }
 
 fn bounded_output_with_timeout(
@@ -541,21 +593,51 @@ pub(crate) fn run_command_with_timeout(
 }
 
 fn render_media(path: &Path, size: i32) -> Result<Vec<u8>, String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let output_path = directory.path().join("thumbnail.png");
     let output = bounded_output(
         Command::new("ffmpegthumbnailer")
             .arg("-i")
             .arg(path)
-            .args(["-o", "/dev/stdout", "-s"])
+            .arg("-o")
+            .arg(&output_path)
+            .arg("-s")
             .arg(size.to_string())
             .args(["-q", "8"]),
         MAX_OUTPUT_BYTES,
-    )
-    .map_err(|error| error.to_string())?;
-    if output.status.success() && !output.stdout.is_empty() {
-        Ok(output.stdout)
-    } else {
-        Err("Unable to render media thumbnail".to_owned())
+    );
+    if !output.is_ok_and(|output| output.status.success()) {
+        let fallback = bounded_output(
+            Command::new("ffmpeg")
+                .args(["-v", "error", "-y", "-threads", "1", "-i"])
+                .arg(path)
+                .args([
+                    "-an",
+                    "-frames:v",
+                    "1",
+                    "-threads",
+                    "1",
+                    "-filter_threads",
+                    "1",
+                    "-vf",
+                ])
+                .arg(format!(
+                    "thumbnail=10,scale={size}:{size}:force_original_aspect_ratio=decrease"
+                ))
+                .arg(&output_path),
+            MAX_OUTPUT_BYTES,
+        )
+        .map_err(|error| error.to_string())?;
+        if !fallback.status.success() {
+            return Err("Unable to render media thumbnail".into());
+        }
     }
+    let file = fs::File::open(output_path).map_err(|error| error.to_string())?;
+    let png = read_limited(file, MAX_OUTPUT_BYTES).map_err(|error| error.to_string())?;
+    if png.is_empty() {
+        return Err("Empty media thumbnail".into());
+    }
+    Ok(png)
 }
 
 fn read_limited(reader: impl Read, max_bytes: u64) -> io::Result<Vec<u8>> {
@@ -575,7 +657,7 @@ fn bounded_output(command: &mut Command, max_bytes: u64) -> io::Result<Output> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()?;
     let read = child
         .stdout

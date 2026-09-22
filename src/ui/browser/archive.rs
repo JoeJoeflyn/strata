@@ -1,4 +1,18 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
+
+//! Compress and extract dialogs for the browser view.
+//!
+//! These methods live on [`ViewState`] and start work through the shared
+//! [`crate::app::Browser`] controller; they must not create a separate archive
+//! pipeline. Password-capable extracts record a retry so a later failure can
+//! reopen [`ViewState::show_extract_password_dialog`].
+//!
+//! # Entry points
+//!
+//! - [`ViewState::show_compress_dialog`]
+//! - [`ViewState::extract_entry`]
+//! - [`ViewState::show_extract_to_dialog`]
+//! - [`ViewState::show_extract_password_dialog`]
 
 use crate::adapters::gio_file_for_location;
 use crate::model::{FileEntry, Location};
@@ -8,25 +22,65 @@ use crate::ui::browser::destination::{
     folder_input_path, resolve_destination_path, setup_transfer_search,
 };
 use crate::ui::browser::entry::{entry_kind_summary, item_count_label};
-use crate::ui::browser::inline_edit::update_basename_validation;
 use crate::ui::browser::paths::compact_display_path;
+use crate::ui::collection_edit::update_basename_validation;
 use crate::ui::controls::{
-    ModalTone, form_entry, form_label, form_password_entry, message_dialog_description,
-    message_dialog_layout, modal_layout, segmented_control,
+    ModalTone, form_entry, form_error_label, form_label, form_password_entry,
+    message_dialog_description, message_dialog_layout, modal_layout, segmented_control,
+    set_form_field_error,
 };
-use crate::ui::modal::{ModalHost, dismiss_modal_layer, modal_layer, show_error_dialog};
+use crate::ui::modal::{
+    ModalHost, dismiss_modal_layer, modal_layer, show_error_dialog, submit_on_enter,
+};
 use gtk::prelude::*;
 use gtk::{gio, glib};
 use std::cell::Cell;
 use std::path::Path;
 use std::rc::Rc;
 
+/// Basename used when creating the archive, with `format`'s extension removed.
+///
+/// Typing `backup.zip` while [`ArchiveFormat::Zip`] is selected yields `backup`,
+/// so the committed file is `backup.zip` rather than `backup.zip.zip`. Suffixes
+/// that do not match [`ArchiveFormat::extension`] are left intact.
 fn normalized_archive_name(name: &str, format: ArchiveFormat) -> String {
     name.strip_suffix(&format!(".{}", format.extension()))
         .unwrap_or(name)
         .to_owned()
 }
 
+fn archive_stem(name: &str) -> &str {
+    const SUFFIXES: &[&str] = &[".tar.gz", ".tgz", ".tar", ".zip", ".7z", ".rar"];
+    let lower = name.to_ascii_lowercase();
+    for suffix in SUFFIXES {
+        if lower.ends_with(suffix) {
+            return &name[..name.len() - suffix.len()];
+        }
+    }
+    name
+}
+
+fn create_extraction_subfolder(parent: &Path, stem: &str) -> std::io::Result<Location> {
+    for suffix in 0_u64.. {
+        let name = if suffix == 0 {
+            stem.to_owned()
+        } else {
+            format!("{stem} ({suffix})")
+        };
+        let path = parent.join(name);
+        // Reserve the directory atomically, including collisions with dangling symlinks.
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(Location::local(path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::other("No available extraction folder name"))
+}
+
+/// Whether `destination` already contains a child named `archive_name`.
+///
+/// Collision checks use the final filename, including the format extension.
 fn archive_has_collision(destination: &Location, archive_name: &str) -> bool {
     gio_file_for_location(destination)
         .child(archive_name)
@@ -34,6 +88,20 @@ fn archive_has_collision(destination: &Location, archive_name: &str) -> bool {
 }
 
 impl ViewState {
+    /// Builds shared chrome for a compress or extract dialog.
+    ///
+    /// Returns the modal body, confirm button, and a dismiss callback. When no
+    /// [`ModalHost`] overlay exists, returns inert widgets so callers can still
+    /// wire handlers without showing a dialog.
+    ///
+    /// # Arguments
+    ///
+    /// * `title` - Dialog heading
+    /// * `subtitle` - Secondary line under the heading
+    /// * `confirm_label` - Confirm button text
+    /// * `block_dismiss` - When `Some` and it returns `true`, backdrop clicks do
+    ///   not close the dialog (used for dirty forms). Escape and cancel/close
+    ///   still dismiss.
     fn build_archive_modal(
         self: &Rc<Self>,
         title: &str,
@@ -87,6 +155,20 @@ impl ViewState {
         (layout.body, layout.confirm, dismiss)
     }
 
+    /// Starts compression, offering replacement or a numbered copy on collision.
+    ///
+    /// Uses [`TransferConflict::FailIfExists`] when the name is free. On a
+    /// collision, shows a conflict prompt instead of overwriting. If that
+    /// prompt cannot be hosted, the operation is not started.
+    ///
+    /// # Arguments
+    ///
+    /// * `entries` - Items to include in the archive
+    /// * `destination` - Directory that will receive the archive
+    /// * `archive_name` - Basename without the format extension
+    /// * `format` - Archive format to write
+    /// * `password` - Optional encryption password for formats that
+    ///   [`ArchiveFormat::supports_password`]
     fn start_compression(
         self: &Rc<Self>,
         entries: Vec<FileEntry>,
@@ -97,6 +179,8 @@ impl ViewState {
     ) {
         let final_name = format!("{archive_name}.{}", format.extension());
         if !archive_has_collision(&destination, &final_name) {
+            self.pending_archive_destination
+                .replace(Some(destination.clone()));
             self.browser.compress(
                 entries,
                 destination,
@@ -122,9 +206,14 @@ impl ViewState {
             ModalTone::Danger,
         );
         layout.body.append(&message_dialog_description(&format!(
-            "An archive named “{final_name}” already exists in {}. Replacing it will overwrite its contents.",
+            "An archive named “{final_name}” already exists in {}. Replace it to overwrite its contents, or keep both to create a numbered copy.",
             compact_display_path(&destination)
         )));
+        let keep_both = gtk::Button::with_label("Keep Both");
+        keep_both.add_css_class("action-dialog-cancel");
+        layout
+            .actions
+            .insert_child_after(&keep_both, Some(&layout.cancel));
         let content = layout.content;
         let close = layout.close;
         let cancel = layout.cancel;
@@ -147,50 +236,88 @@ impl ViewState {
             });
         }
 
-        let replaced_layer = layer.clone();
-        let replaced_overlay = window_overlay.clone();
-        let replaced_root = blurred_root.clone();
-        let browser = self.browser.clone();
-        replace.connect_clicked(move |_| {
-            dismiss_modal_layer(&replaced_layer, &replaced_overlay, replaced_root.as_ref());
-            browser.compress(
-                entries.clone(),
-                destination.clone(),
-                archive_name.clone(),
-                TransferConflict::ReplaceExisting,
-                format,
-                password.clone(),
-            );
-        });
+        for (button, conflict) in [
+            (&replace, TransferConflict::ReplaceExisting),
+            (&keep_both, TransferConflict::KeepBoth),
+        ] {
+            let chosen_layer = layer.clone();
+            let chosen_overlay = window_overlay.clone();
+            let chosen_root = blurred_root.clone();
+            let state = Rc::downgrade(self);
+            let entries = entries.clone();
+            let destination = destination.clone();
+            let archive_name = archive_name.clone();
+            let password = password.clone();
+            button.connect_clicked(move |_| {
+                dismiss_modal_layer(&chosen_layer, &chosen_overlay, chosen_root.as_ref());
+                if let Some(state) = state.upgrade() {
+                    state
+                        .pending_archive_destination
+                        .replace(Some(destination.clone()));
+                    state.browser.compress(
+                        entries.clone(),
+                        destination.clone(),
+                        archive_name.clone(),
+                        conflict,
+                        format,
+                        password.clone(),
+                    );
+                }
+            });
+        }
 
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let escaped_layer = layer.clone();
         let escaped_overlay = window_overlay;
         let escaped_root = blurred_root;
-        let enter_replace = replace.clone();
+        let enter_buttons = [keep_both, replace.clone(), cancel, close];
         keys.connect_key_pressed(move |_, key, _, _| {
             if key == gtk::gdk::Key::Escape {
                 dismiss_modal_layer(&escaped_layer, &escaped_overlay, escaped_root.as_ref());
                 glib::Propagation::Stop
             } else if key == gtk::gdk::Key::Return || key == gtk::gdk::Key::KP_Enter {
-                enter_replace.emit_clicked();
-                glib::Propagation::Stop
+                if let Some(button) = enter_buttons.iter().find(|button| button.has_focus()) {
+                    button.emit_clicked();
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
             } else {
                 glib::Propagation::Proceed
             }
         });
         layer.add_controller(keys);
-        replace.grab_focus();
+        let initial_focus = replace.clone();
+        glib::idle_add_local_once(move || {
+            initial_focus.grab_focus();
+            if let Some(window) = initial_focus.root().and_downcast::<gtk::Window>() {
+                window.set_focus_visible(false);
+            }
+        });
     }
 
+    /// Opens the compress dialog for the selected `entries`.
+    ///
+    /// Returns immediately when the selection is empty or any entry is not a
+    /// native path; archive creation is a local operation. The destination is
+    /// the first entry's parent, then the active location, then the home
+    /// directory. Password fields are shown only for formats that
+    /// [`ArchiveFormat::supports_password`]. The typed name is normalized with
+    /// [`normalized_archive_name`] and checked with [`validate_basename`] before
+    /// [`Self::start_compression`].
     pub(super) fn show_compress_dialog(self: &Rc<Self>, entries: Vec<FileEntry>) {
-        if entries.is_empty() {
+        if entries.is_empty()
+            || entries
+                .iter()
+                .any(|entry| entry.location.native_path().is_none())
+        {
             return;
         }
-        let destination = self
-            .browser
-            .active_location()
+        let destination = entries[0]
+            .location
+            .parent()
+            .or_else(|| self.browser.active_location())
             .unwrap_or_else(|| Location::local(glib::home_dir()));
 
         let default_name = if entries.len() == 1 {
@@ -343,10 +470,21 @@ impl ViewState {
                 );
             }
         });
+        submit_on_enter(&body, &confirm);
         name_entry.grab_focus();
     }
 
+    /// Extracts `entry` into its parent directory ("Extract here").
+    ///
+    /// Returns immediately when the archive is not a native path. Archives
+    /// without a parent show an error instead of extracting. Password-capable
+    /// formats record a retry so a later password or encryption failure can
+    /// reopen [`Self::show_extract_password_dialog`]. The first attempt is sent
+    /// without a password.
     pub(super) fn extract_entry(self: &Rc<Self>, entry: FileEntry) {
+        if entry.location.native_path().is_none() {
+            return;
+        }
         let Some(parent) = entry.location.parent() else {
             show_error_dialog(
                 &self.overlay,
@@ -363,7 +501,51 @@ impl ViewState {
         self.browser.extract(entry, parent, None);
     }
 
+    pub(super) fn extract_entry_to_subfolder(self: &Rc<Self>, entry: FileEntry) {
+        if entry.location.native_path().is_none() {
+            return;
+        }
+        let Some(parent) = entry.location.parent() else {
+            show_error_dialog(
+                &self.overlay,
+                "Cannot extract",
+                "This archive has no parent directory.",
+            );
+            return;
+        };
+        let stem = archive_stem(&entry.display_name);
+        if stem.is_empty() || stem == "." || stem == ".." || stem.contains('/') {
+            self.extract_entry(entry);
+            return;
+        }
+        let Some(parent_path) = parent.native_path() else {
+            return;
+        };
+        let destination = match create_extraction_subfolder(parent_path, stem) {
+            Ok(destination) => destination,
+            Err(error) => {
+                show_error_dialog(&self.overlay, "Cannot extract", &error.to_string());
+                return;
+            }
+        };
+        let format = ArchiveFormat::from_extension(&entry.display_name);
+        if format.map(|f| f.supports_password()).unwrap_or(false) {
+            self.pending_extract_retry
+                .replace(Some((entry.clone(), destination.clone())));
+        }
+        self.browser.extract(entry, destination, None);
+    }
+
+    /// Opens the "Extract to" folder picker for `entry`.
+    ///
+    /// Returns immediately when the archive is not a native path. Confirm
+    /// creates the typed destination if it does not exist, then extracts into
+    /// that folder and navigates there when the operation finishes. Password
+    /// retry is recorded the same way as [`Self::extract_entry`].
     pub(super) fn show_extract_to_dialog(self: &Rc<Self>, entry: FileEntry) {
+        if entry.location.native_path().is_none() {
+            return;
+        }
         let base = entry
             .location
             .parent()
@@ -437,14 +619,6 @@ impl ViewState {
                 confirm_field.grab_focus();
                 return;
             }
-            if !path.exists()
-                && let Err(e) = std::fs::create_dir_all(&path)
-            {
-                confirm_error.set_text(&format!("Could not create folder: {e}"));
-                confirm_error.set_visible(true);
-                confirm_field.add_css_class("error");
-                return;
-            }
             let dest = Location::local(path);
             let format = ArchiveFormat::from_extension(&extract_entry.display_name);
             if format.map(|f| f.supports_password()).unwrap_or(false) {
@@ -459,13 +633,21 @@ impl ViewState {
             dismiss_for_confirm();
         });
 
+        submit_on_enter(&body, &confirm);
         field.grab_focus();
     }
 
+    /// Prompts for a password after a password-capable extract failed.
+    ///
+    /// Shown from operation-failure handling when the error mentions a password
+    /// or encryption. Empty submissions remain in the dialog, while a rejected
+    /// password reopens it with inline error feedback.
     pub(super) fn show_extract_password_dialog(
         self: &Rc<Self>,
         entry: FileEntry,
         destination: Location,
+        invalid_password: bool,
+        navigate_after_extract: Option<Location>,
     ) {
         let password_entry = form_password_entry();
         password_entry.set_show_peek_icon(true);
@@ -478,18 +660,48 @@ impl ViewState {
         );
 
         let password_label = form_label("Password");
+        let password_error = form_error_label();
         body.append(&password_label);
         body.append(&password_entry);
+        body.append(&password_error);
+        if invalid_password {
+            set_form_field_error(&password_entry, &password_error, Some("Invalid password"));
+        }
+        let field_for_change = password_entry.clone();
+        let error_for_change = password_error.clone();
+        password_entry.connect_changed(move |_| {
+            set_form_field_error(&field_for_change, &error_for_change, None);
+        });
 
+        let extract_state = self.clone();
         let browser = self.browser.clone();
         let password_for_confirm = password_entry.clone();
+        let error_for_confirm = password_error.clone();
         let dismiss_for_confirm = dismiss.clone();
         confirm.connect_clicked(move |_| {
             let pw = password_for_confirm.text().to_string();
-            let password = if pw.is_empty() { None } else { Some(pw) };
+            if pw.is_empty() {
+                set_form_field_error(
+                    &password_for_confirm,
+                    &error_for_confirm,
+                    Some("Enter a password"),
+                );
+                password_for_confirm.grab_focus();
+                return;
+            }
+            let format = ArchiveFormat::from_extension(&entry.display_name);
+            if format.map(|f| f.supports_password()).unwrap_or(false) {
+                extract_state
+                    .pending_extract_retry
+                    .replace(Some((entry.clone(), destination.clone())));
+            }
+            extract_state
+                .pending_navigate
+                .replace(navigate_after_extract.clone());
             dismiss_for_confirm();
-            browser.extract(entry.clone(), destination.clone(), password);
+            browser.extract(entry.clone(), destination.clone(), Some(pw));
         });
+        submit_on_enter(&body, &confirm);
         password_entry.grab_focus();
     }
 }

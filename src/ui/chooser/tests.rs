@@ -1,9 +1,14 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
+mod acceptance;
 mod context_menu;
+mod filename;
+mod filtered_preview;
 mod keyboard;
 mod layout;
+mod recent;
 mod selection;
+mod sizing;
 
 use std::{ffi::OsString, path::Path};
 
@@ -19,10 +24,14 @@ fn entry(name: &str, kind: EntryKind) -> FileEntry {
         thumbnail_path: None,
         display_name: name.to_owned(),
         kind,
+        recent_unix_seconds: MetadataValue::Unknown,
         is_hidden: false,
         mode: MetadataValue::Unknown,
         size: MetadataValue::Unknown,
         modified_unix_seconds: MetadataValue::Unknown,
+        image_dimensions: MetadataValue::Unknown,
+        child_count: MetadataValue::Unknown,
+        duration_seconds: MetadataValue::Unknown,
     }
 }
 
@@ -52,11 +61,11 @@ fn native_filters_match_globs_and_mime_types_without_hiding_directories() {
     ));
     let hidden = entry("archive.zip", EntryKind::File);
     assert!(
-        matches!(filter_directory_change(Some(&filter), DirectoryChange::Upsert(hidden.clone())), DirectoryChange::Remove(location) if location == hidden.location)
+        matches!(filter_directory_change(Some(&filter), false, DirectoryChange::Upsert(hidden.clone())), DirectoryChange::Remove(location) if location == hidden.location)
     );
     let previous = Location::local("/tmp/previous.txt");
     assert!(
-        matches!(filter_directory_change(Some(&filter), DirectoryChange::Move { from: previous.clone(), entry: hidden }), DirectoryChange::Remove(location) if location == previous)
+        matches!(filter_directory_change(Some(&filter), false, DirectoryChange::Move { from: previous.clone(), entry: hidden }), DirectoryChange::Remove(location) if location == previous)
     );
 }
 
@@ -120,6 +129,7 @@ fn chooser_fills_metadata_for_the_current_browser_views() {
             id: RequestId(1),
             entries: vec![Location::local(&path)],
             full: false,
+            include_icon_details: false,
             time_budget: Duration::from_secs(2),
         },
         Rc::new(move |event| received.borrow_mut().push(event)),
@@ -179,10 +189,18 @@ fn chooser_previews_the_same_supported_types_as_the_main_browser() {
             "{name} should be previewable"
         );
     }
-    assert!(preview_target(Some(entry("archive.zip", EntryKind::File))).is_none());
+    assert!(preview_target(Some(entry("archive.zip", EntryKind::File))).is_some());
     assert!(
         preview_target(Some(entry("folder.mp4", EntryKind::Directory))).is_none(),
         "folders should remain navigation targets"
+    );
+    assert!(
+        preview_target(Some(entry("data.tar.gz", EntryKind::File))).is_some(),
+        "archives should be previewable"
+    );
+    assert!(
+        preview_target(Some(entry("compressed.gz", EntryKind::File))).is_none(),
+        "plain gzip streams should not open the archive tree preview"
     );
 }
 
@@ -266,4 +284,122 @@ fn chooser_dimensions_fall_back_for_invalid_geometry() {
             (FALLBACK_CHOOSER_WIDTH, FALLBACK_CHOOSER_HEIGHT)
         );
     }
+}
+
+#[test]
+fn chooser_dimensions_follow_split_application_geometry() {
+    let monitor = Some((1920, 1080));
+    assert_eq!(
+        chooser_initial_dimensions(monitor, Some((960, 1080))),
+        (768, 680)
+    );
+    assert_eq!(
+        chooser_initial_dimensions(monitor, Some((960, 540))),
+        (768, 460)
+    );
+    assert_eq!(
+        chooser_initial_dimensions(monitor, Some((1920, 1080))),
+        (1000, 680)
+    );
+    assert_eq!(
+        chooser_initial_dimensions(monitor, Some((i32::MAX, i32::MAX))),
+        (1000, 680)
+    );
+    assert_eq!(
+        chooser_initial_dimensions(Some((800, 600)), Some((1920, 1080))),
+        (640, 468)
+    );
+    assert_eq!(
+        chooser_initial_dimensions(None, Some((960, 1080))),
+        (768, 680)
+    );
+}
+
+#[test]
+fn missing_or_invalid_application_geometry_preserves_monitor_fallback() {
+    for parent in [None, Some((0, 600)), Some((800, -1))] {
+        assert_eq!(
+            chooser_initial_dimensions(Some((1920, 1080)), parent),
+            (1000, 680)
+        );
+        assert_eq!(chooser_initial_dimensions(None, parent), (920, 580));
+        assert_eq!(
+            chooser_initial_dimensions(Some((0, 1080)), parent),
+            (920, 580)
+        );
+    }
+}
+
+#[test]
+fn a_long_dropdown_opens_toward_the_roomier_side() {
+    let (position, _) = dropdown_placement(680, 572, 602);
+    assert_eq!(
+        position,
+        gtk::PositionType::Top,
+        "a button near the bottom must open upward"
+    );
+
+    let (position, _) = dropdown_placement(680, 78, 108);
+    assert_eq!(
+        position,
+        gtk::PositionType::Bottom,
+        "a button near the top must open downward"
+    );
+
+    for (available, top, bottom) in [(0, 0, 0), (-10, -10, -5), (120, 60, 90)] {
+        let (_, height) = dropdown_placement(available, top, bottom);
+        assert_eq!(
+            height, MIN_DROPDOWN_CONTENT_HEIGHT,
+            "a cramped or invalid window still shows a usable list"
+        );
+    }
+}
+
+#[test]
+fn a_long_dropdown_scrolls_instead_of_overflowing_the_window() {
+    crate::test_support::gtk_test(
+        "ui::chooser::tests::a_long_dropdown_scrolls_instead_of_overflowing_the_window",
+        || {
+            let owned = (0..80)
+                .map(|index| format!("Filter {index}"))
+                .collect::<Vec<_>>();
+            let labels = owned.iter().map(String::as_str).collect::<Vec<_>>();
+            let dropdown = ChooserDropdown::new(&labels, 0);
+            let window = gtk::Window::builder()
+                .default_width(900)
+                .default_height(561)
+                .child(&dropdown.button)
+                .build();
+            window.present();
+            dropdown.button.popup();
+
+            let scroll = dropdown
+                .popover
+                .child()
+                .and_downcast::<gtk::ScrolledWindow>()
+                .expect("the dropdown list is scrollable");
+            assert_eq!(scroll.vscrollbar_policy(), gtk::PolicyType::Automatic);
+            assert!(scroll.propagates_natural_height());
+            let bounded = scroll.max_content_height();
+            assert!(
+                bounded <= window.height().max(MIN_DROPDOWN_CONTENT_HEIGHT),
+                "the list must stay within the window: {bounded}"
+            );
+            assert!(
+                bounded >= MIN_DROPDOWN_CONTENT_HEIGHT,
+                "the list must be bounded to a usable height, got {bounded}"
+            );
+            let natural = scroll
+                .child()
+                .expect("dropdown list")
+                .preferred_size()
+                .1
+                .height();
+            assert!(
+                natural > bounded,
+                "the fixture must exceed the bound so it actually scrolls: {natural} vs {bounded}"
+            );
+            window.destroy();
+        },
+    );
 }

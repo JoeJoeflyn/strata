@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use super::{
     LocationValidationError, UriCredentials, backend_unavailable_message, sanitize_uri_credentials,
@@ -125,6 +125,7 @@ fn default_fill_reports_unsupported_synchronously() {
             id: RequestId(4),
             entries: Vec::new(),
             full: false,
+            include_icon_details: false,
             time_budget: Duration::from_secs(1),
         },
         Rc::new(move |event| collected.borrow_mut().push(event)),

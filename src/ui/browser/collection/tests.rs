@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use super::*;
+use crate::app::{Browser, BrowserEvent};
+use crate::services::SearchItem;
 use crate::ui::entry_list_model::EntryListModel;
 use gtk::glib;
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 #[test]
 fn recursive_search_arrows_select_and_clamp_results() {
@@ -12,6 +15,33 @@ fn recursive_search_arrows_select_and_clamp_results() {
     assert_eq!(search_result_navigation_position(Some(1), 3, 1), Some(2));
     assert_eq!(search_result_navigation_position(Some(2), 3, 1), Some(2));
     assert_eq!(search_result_navigation_position(None, 0, 1), None);
+}
+
+#[test]
+fn recursive_file_activation_emits_open_request() {
+    let browser = Browser::new(Rc::new(crate::adapters::LocalFileSource));
+    let opened = Rc::new(RefCell::new(None));
+    let opened_for_observer = opened.clone();
+    browser.observe(move |event| {
+        if let BrowserEvent::OpenRequested { location } = event {
+            opened_for_observer.replace(Some(location.clone()));
+        }
+    });
+    let path = PathBuf::from("/filtered.txt");
+    let results = RefCell::new(vec![SearchItem::for_test(path.clone(), false)]);
+
+    assert!(activate_recursive_search_result(
+        &Rc::downgrade(&browser),
+        &results,
+        0
+    ));
+    assert_eq!(
+        opened
+            .borrow()
+            .as_ref()
+            .and_then(|location| location.native_path()),
+        Some(path.as_path())
+    );
 }
 
 #[test]
@@ -57,6 +87,82 @@ fn filter_queries_keep_matches_near_the_end() {
     assert_eq!(map.forward, vec![2]);
     assert_eq!(map.query, "zu");
     assert_eq!(map.generation, 4);
+}
+
+#[test]
+fn wildcard_and_typo_filter_updates_keep_visible_rows_and_position_maps_in_sync() {
+    crate::test_support::gtk_test(
+        "ui::browser::collection::tests::wildcard_and_typo_filter_updates_keep_visible_rows_and_position_maps_in_sync",
+        || {
+            let source = mapped_source(&[
+                "fv\tclip.MOV.bak",
+                "fv\tclip.MOV",
+                "fh\t.hidden.MOV",
+                "fv\tclip.MOV.backup",
+                "fv\tIMG_001.jpg",
+                "fv\ttrash.svg",
+                "fv\ttrahs.svg",
+                "fv\tstrata-search.svg",
+            ]);
+            let query = Rc::new(RefCell::new(String::new()));
+            let show_hidden = Rc::new(Cell::new(false));
+            let filter = super::super::entry::entry_filter(show_hidden.clone(), query.clone());
+            let model = gtk::FilterListModel::new(Some(source.clone()), Some(filter.clone()));
+            let map = ViewMap::new(
+                query.clone(),
+                show_hidden,
+                Rc::new(Cell::new(1)),
+                source.clone(),
+                model.clone(),
+                None,
+            );
+            for (text, expected) in [
+                ("*.MOV", vec![1]),
+                ("*.MOV.b", vec![]),
+                ("*.MOV.b*", vec![0, 3]),
+                ("*.MOV.b", vec![]),
+                (".MOV.b", vec![0, 3]),
+                ("trs", vec![]),
+                ("trsh", vec![5]),
+                ("trs", vec![]),
+                ("trahs", vec![5, 6]),
+                ("trahs*", vec![6]),
+                ("trash", vec![5, 6]),
+                ("trash*", vec![5]),
+                ("*", vec![0, 1, 3, 4, 5, 6, 7]),
+                ("", vec![0, 1, 3, 4, 5, 6, 7]),
+            ] {
+                notify_filter_query(&filter, &query, text.into());
+                assert_eq!(model.n_items() as usize, expected.len(), "{text}");
+                for (visible, source_position) in expected.iter().enumerate() {
+                    let visible = visible as u32;
+                    assert_eq!(
+                        map.source_position(visible),
+                        Some(*source_position),
+                        "{text}"
+                    );
+                    assert_eq!(map.view_position(*source_position), Some(visible), "{text}");
+                    assert_eq!(
+                        model
+                            .item(visible)
+                            .and_downcast::<gtk::StringObject>()
+                            .expect("visible filename")
+                            .string()
+                            .as_str(),
+                        source
+                            .value(*source_position as u32)
+                            .expect("source filename"),
+                        "{text}",
+                    );
+                }
+                for position in 0..source.n_items() as usize {
+                    if !expected.contains(&position) {
+                        assert_eq!(map.view_position(position), None, "{text}");
+                    }
+                }
+            }
+        },
+    );
 }
 
 #[test]
@@ -156,6 +262,52 @@ fn seeded_filter_keeps_first_character_when_typing_continues() {
     super::focus_filter_entry(&entry, None);
     assert_eq!(entry.text(), format!("文{suffix}"));
     window.destroy();
+}
+
+#[test]
+fn an_allocated_scroll_supersedes_the_pending_first_row_scroll() {
+    crate::test_support::gtk_test(
+        "ui::browser::collection::tests::an_allocated_scroll_supersedes_the_pending_first_row_scroll",
+        || {
+            let names: Vec<_> = (0..200).map(|index| format!("Item {index}")).collect();
+            let model = gtk::StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
+            let factory = gtk::SignalListItemFactory::new();
+            factory.connect_setup(|_, item| {
+                item.downcast_ref::<gtk::ListItem>()
+                    .expect("list item")
+                    .set_child(Some(&gtk::Label::new(Some("Item"))));
+            });
+            let selection = gtk::NoSelection::new(Some(model));
+            let list = gtk::ListView::new(Some(selection), Some(factory));
+            let scroller = gtk::ScrolledWindow::builder().child(&list).build();
+            let window = gtk::Window::builder()
+                .child(&scroller)
+                .default_width(300)
+                .default_height(200)
+                .build();
+
+            window.present();
+            list.grab_focus();
+            scroll_collection_when_allocated(list.upcast_ref(), 0);
+            list.allocate(300, 200, -1, None);
+            scroll_collection_when_allocated(list.upcast_ref(), 190);
+
+            let frames = Rc::new(Cell::new(0));
+            let seen = frames.clone();
+            window.add_tick_callback(move |_, _| {
+                seen.set(seen.get() + 1);
+                glib::ControlFlow::Continue
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while frames.get() < 5 {
+                assert!(std::time::Instant::now() < deadline, "layout timed out");
+                glib::MainContext::default().iteration(false);
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert!(scroller.vadjustment().value() > 1000.0);
+            window.destroy();
+        },
+    );
 }
 
 const SCROLL_PIN_GTK_CHILD: &str = "STRATA_SCROLL_PIN_GTK_CHILD";

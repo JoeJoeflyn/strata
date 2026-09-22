@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use crate::ui::blur::BlurBin;
 use crate::ui::browser::ViewState;
@@ -27,6 +27,7 @@ pub(super) struct FileProgressView {
     blurred_root: Option<BlurBin>,
     progress: gtk::ProgressBar,
     status: gtk::Label,
+    archive_activity: gtk::Spinner,
     indeterminate: Rc<Cell<bool>>,
     pulse_source: Rc<RefCell<Option<glib::SourceId>>>,
 }
@@ -128,7 +129,12 @@ impl ViewState {
         let progress = gtk::ProgressBar::new();
         progress.add_css_class("modal-progress");
         progress.set_fraction(0.0);
-        layout.body.append(&status);
+        let archive_activity = gtk::Spinner::new();
+        archive_activity.set_visible(false);
+        let status_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        status_row.append(&archive_activity);
+        status_row.append(&status);
+        layout.body.append(&status_row);
         layout.body.append(&progress);
         let content = layout.content;
         let cancel = layout.confirm;
@@ -152,7 +158,12 @@ impl ViewState {
         });
         pulse_source.replace(Some(source));
 
-        let layer = modal_layer(&content, &window_overlay, blurred_root.clone(), None);
+        let layer = modal_layer(
+            &content,
+            &window_overlay,
+            blurred_root.clone(),
+            Some(Rc::new(|| true)),
+        );
         window_overlay.add_overlay(&layer);
         self.file_progress_view.replace(Some(FileProgressView {
             layer,
@@ -160,6 +171,7 @@ impl ViewState {
             blurred_root,
             progress,
             status,
+            archive_activity,
             indeterminate,
             pulse_source,
         }));
@@ -233,7 +245,12 @@ impl ViewState {
         let Some(view) = progress_view.as_ref() else {
             return;
         };
-        if total == 0 {
+        view.archive_activity.set_visible(true);
+        view.archive_activity.start();
+        if completed == 0 {
+            view.status.set_text("Preparing…");
+            view.indeterminate.set(true);
+        } else if total == 0 {
             view.status.set_text(&format!("{completed} files"));
             view.indeterminate.set(true);
         } else {
@@ -245,6 +262,13 @@ impl ViewState {
     }
 
     pub(super) fn dismiss_file_operation_progress(&self) {
+        self.dismiss_file_operation_progress_then(|| {});
+    }
+
+    pub(super) fn dismiss_file_operation_progress_then(
+        &self,
+        after_dismiss: impl FnOnce() + 'static,
+    ) {
         if let Some(source) = self.pending_file_progress.take() {
             source.remove();
         }
@@ -252,10 +276,22 @@ impl ViewState {
         self.transfer_progress.set(None);
         if let Some(view) = self.file_progress_view.take() {
             view.indeterminate.set(false);
+            view.archive_activity.stop();
             if let Some(source) = view.pulse_source.take() {
                 source.remove();
             }
+            let after_dismiss = Rc::new(RefCell::new(Some(after_dismiss)));
+            let callback = after_dismiss.clone();
+            view.layer.connect_parent_notify(move |layer| {
+                if layer.parent().is_none()
+                    && let Some(callback) = callback.borrow_mut().take()
+                {
+                    callback();
+                }
+            });
             dismiss_modal_layer(&view.layer, &view.overlay, view.blurred_root.as_ref());
+        } else {
+            after_dismiss();
         }
     }
 

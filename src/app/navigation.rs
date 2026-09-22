@@ -1,6 +1,7 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use std::{
+    cell::Cell,
     cmp::Ordering,
     collections::{HashMap, HashSet},
 };
@@ -32,14 +33,24 @@ pub struct EntrySplice {
     pub entries: Vec<FileEntry>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ColumnEntryCounts {
+    pub total: usize,
+    pub files: usize,
+    pub folders: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct ColumnState {
     pub location: Location,
     pub entries: Vec<FileEntry>,
+    entry_counts: Cell<Option<(bool, ColumnEntryCounts)>>,
+    metadata_positions: Option<HashMap<Location, usize>>,
     pub selected: Option<usize>,
     selected_locations: HashSet<Location>,
     selection_anchor: Option<Location>,
     selection_target: Option<Location>,
+    pending_selection: HashSet<Location>,
     pub load_state: LoadState,
     pub truncated: bool,
     /// Whether entries here can be moved to Trash, resolved from a listed entry
@@ -53,6 +64,8 @@ pub struct ColumnState {
     preferences: ViewPreferences,
     request_id: RequestId,
     select_first_on_load: bool,
+    // Auto-selection must not redirect paste into the first folder.
+    load_cursor: Option<Location>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -89,6 +102,8 @@ pub struct NavigationState {
     back_history: Vec<NavigationPath>,
     forward_history: Vec<NavigationPath>,
     preferences: ViewPreferences,
+    // GTK focus/rebuild selection echoes must not arm paste-into.
+    selection_commit: bool,
 }
 
 impl NavigationState {
@@ -116,6 +131,7 @@ impl NavigationState {
 
         self.record_navigation();
         self.peek = None;
+        self.selection_commit = false;
         self.columns.truncate(parent_depth + 1);
         self.push_column(location, request_id);
         self.active_column = self.columns.len().checked_sub(1);
@@ -162,25 +178,30 @@ impl NavigationState {
         request_ids: impl IntoIterator<Item = RequestId>,
     ) {
         self.peek = None;
+        self.selection_commit = false;
         let preferences = self.preferences;
         self.columns = path
             .locations
             .into_iter()
             .zip(request_ids)
             .map(|(location, request_id)| ColumnState {
+                preferences: preferences_for_location(preferences, &location),
                 location,
                 entries: Vec::new(),
+                entry_counts: Cell::new(None),
+                metadata_positions: None,
                 selected: None,
                 selected_locations: HashSet::new(),
                 selection_anchor: None,
                 selection_target: None,
+                pending_selection: HashSet::new(),
                 load_state: LoadState::Loading,
                 truncated: false,
                 can_trash: None,
                 can_delete: None,
-                preferences,
                 request_id,
                 select_first_on_load: false,
+                load_cursor: None,
             })
             .collect();
         self.active_column = self.columns.len().checked_sub(1);
@@ -238,19 +259,23 @@ impl NavigationState {
 
     fn push_column(&mut self, location: Location, request_id: RequestId) {
         self.columns.push(ColumnState {
+            preferences: preferences_for_location(self.preferences, &location),
             location,
             entries: Vec::new(),
+            entry_counts: Cell::new(None),
+            metadata_positions: None,
             selected: None,
             selected_locations: HashSet::new(),
             selection_anchor: None,
             selection_target: None,
+            pending_selection: HashSet::new(),
             load_state: LoadState::Loading,
             truncated: false,
             can_trash: None,
             can_delete: None,
-            preferences: self.preferences,
             request_id,
             select_first_on_load: false,
+            load_cursor: None,
         });
     }
 
@@ -274,6 +299,7 @@ impl NavigationState {
         let (merged, insertions) =
             merge_entries(std::mem::take(&mut column.entries), entries, preferences);
         column.entries = merged;
+        column.invalidate_entry_indexes();
         if let Some(selected_location) =
             selected_location.or_else(|| column.selection_target.clone())
         {
@@ -285,7 +311,9 @@ impl NavigationState {
                 column.selection_target = None;
             }
         }
+        column.restore_pending_selection();
         if column.select_first_on_load && !column.entries.is_empty() {
+            column.pending_selection.clear();
             let first_visible = column
                 .entries
                 .iter()
@@ -295,8 +323,9 @@ impl NavigationState {
                 column.selected = Some(position);
                 column.selected_locations.clear();
                 column.selected_locations.insert(location.clone());
-                column.selection_anchor = Some(location);
+                column.selection_anchor = Some(location.clone());
                 column.select_first_on_load = false;
+                column.load_cursor = Some(location);
             }
         }
         Some((depth, insertions))
@@ -310,6 +339,7 @@ impl NavigationState {
     ) -> Option<usize> {
         let (depth, column) = self.column_for_request_mut(request_id)?;
         column.entries = entries;
+        column.invalidate_entry_indexes();
         if let Some(selected_location) = column.selection_target.clone() {
             column.selected = column
                 .entries
@@ -319,7 +349,9 @@ impl NavigationState {
                 column.selection_target = None;
             }
         }
+        column.restore_pending_selection();
         if column.select_first_on_load && !column.entries.is_empty() {
+            column.pending_selection.clear();
             let first_visible = column
                 .entries
                 .iter()
@@ -329,8 +361,9 @@ impl NavigationState {
                 column.selected = Some(position);
                 column.selected_locations.clear();
                 column.selected_locations.insert(location.clone());
-                column.selection_anchor = Some(location);
+                column.selection_anchor = Some(location.clone());
                 column.select_first_on_load = false;
+                column.load_cursor = Some(location);
             }
         }
         Some(depth)
@@ -353,18 +386,49 @@ impl NavigationState {
             .iter()
             .map(|update| (&update.location, update))
             .collect();
-        let mut positions = Vec::new();
-        for (position, entry) in column.entries.iter_mut().enumerate() {
-            if let Some(update) = updates.get(&entry.location)
-                && apply_metadata_update(entry, update)
-            {
-                positions.push(position);
+        if updates.is_empty() {
+            return None;
+        }
+        // Full-sort fills arrive in small chunks. Build routing once, not a directory scan
+        // per chunk; structural changes invalidate it and the sort terminal releases it.
+        let index = column.metadata_positions.get_or_insert_with(|| {
+            column
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(position, entry)| (entry.location.clone(), position))
+                .collect()
+        });
+        let mut positions = Vec::with_capacity(updates.len());
+        if index.len() == column.entries.len() {
+            for (location, update) in updates {
+                if let Some(&position) = index.get(location)
+                    && apply_metadata_update(&mut column.entries[position], update)
+                {
+                    positions.push(position);
+                }
+            }
+        } else {
+            // Providers may repeat a location; keep updating every matching entry.
+            for (position, entry) in column.entries.iter_mut().enumerate() {
+                if let Some(update) = updates.get(&entry.location)
+                    && apply_metadata_update(entry, update)
+                {
+                    positions.push(position);
+                }
             }
         }
         if positions.is_empty() {
             return None;
         }
+        positions.sort_unstable();
         Some((depth, positions))
+    }
+
+    pub(super) fn clear_metadata_positions(&mut self, depth: usize) {
+        if let Some(column) = self.columns.get_mut(depth) {
+            column.metadata_positions = None;
+        }
     }
 
     /// Stale rows keep their placeholders and retry on the next bind.
@@ -420,8 +484,7 @@ impl NavigationState {
                 {
                     return None;
                 }
-                remove_monitored_entry(&mut column.entries, &entry.location, &mut splices);
-                insert_monitored_entry(&mut column.entries, entry, preferences, &mut splices);
+                upsert_monitored_entry(&mut column.entries, entry, preferences, &mut splices);
             }
             DirectoryChange::Remove(location) => {
                 let removed_position = column
@@ -438,20 +501,52 @@ impl NavigationState {
                             .get(position.min(column.entries.len().saturating_sub(1)))
                             .map(|entry| entry.location.clone())
                     });
+                    if let Some(ref replacement) = selected_location {
+                        column.selected_locations.insert(replacement.clone());
+                    }
                 }
             }
-            DirectoryChange::Move { from, entry } => {
+            DirectoryChange::Move { from, mut entry } => {
+                if let Some(previous) = column
+                    .entries
+                    .iter()
+                    .find(|previous| previous.location == from)
+                    && previous.kind == entry.kind
+                    && matches!(entry.size, MetadataValue::Known(_))
+                    && previous.size == entry.size
+                    && matches!(entry.modified_unix_seconds, MetadataValue::Known(_))
+                    && previous.modified_unix_seconds == entry.modified_unix_seconds
+                    && std::path::Path::new(&previous.native_name).extension()
+                        == std::path::Path::new(&entry.native_name).extension()
+                {
+                    // Monitor entries contain stat data, not the details already loaded for this file.
+                    if entry.image_dimensions == MetadataValue::Unknown {
+                        entry.image_dimensions = previous.image_dimensions.clone();
+                    }
+                    if entry.child_count == MetadataValue::Unknown {
+                        entry.child_count = previous.child_count.clone();
+                    }
+                    if entry.duration_seconds == MetadataValue::Unknown {
+                        entry.duration_seconds = previous.duration_seconds.clone();
+                    }
+                }
                 if selected_location.as_ref() == Some(&from) {
                     selected_location = Some(entry.location.clone());
                 }
                 if column.selected_locations.remove(&from) {
                     column.selected_locations.insert(entry.location.clone());
                 }
-                remove_monitored_entry(&mut column.entries, &from, &mut splices);
-                if entry.location != from {
-                    remove_monitored_entry(&mut column.entries, &entry.location, &mut splices);
+                for target in [
+                    &mut column.selection_target,
+                    &mut column.selection_anchor,
+                    &mut column.load_cursor,
+                ] {
+                    if target.as_ref() == Some(&from) {
+                        *target = Some(entry.location.clone());
+                    }
                 }
-                insert_monitored_entry(&mut column.entries, entry, preferences, &mut splices);
+                remove_monitored_entry(&mut column.entries, &from, &mut splices);
+                upsert_monitored_entry(&mut column.entries, entry, preferences, &mut splices);
             }
             DirectoryChange::Rescan => return None,
         }
@@ -465,12 +560,8 @@ impl NavigationState {
                 .iter()
                 .position(|entry| entry.location == location)
         });
-        column.selected_locations.retain(|location| {
-            column
-                .entries
-                .iter()
-                .any(|entry| &entry.location == location)
-        });
+        column.invalidate_entry_indexes();
+        column.retain_selected_locations(false);
         column.load_state = if column.entries.is_empty() {
             LoadState::Empty
         } else {
@@ -484,8 +575,11 @@ impl NavigationState {
         column.selection_target = column
             .selected
             .and_then(|position| column.entries.get(position))
-            .map(|entry| entry.location.clone());
-        column.entries.clear();
+            .map(|entry| entry.location.clone())
+            .or_else(|| column.selection_target.clone());
+        column.pending_selection = column.selected_locations.clone();
+        column.entries = Vec::new();
+        column.invalidate_entry_indexes();
         column.selected = None;
         column.load_state = LoadState::Loading;
         column.truncated = false;
@@ -493,6 +587,33 @@ impl NavigationState {
         column.can_delete = None;
         column.request_id = request_id;
         Some(column.location.clone())
+    }
+
+    pub fn relocate_column(&mut self, depth: usize, location: Location, request_id: RequestId) {
+        let Some(previous) = self.reload_column(depth, request_id) else {
+            return;
+        };
+        let column = &mut self.columns[depth];
+        column.selected_locations = column
+            .selected_locations
+            .iter()
+            .filter_map(|selected| selected.rebase(&previous, &location))
+            .collect();
+        column.pending_selection = column
+            .pending_selection
+            .iter()
+            .filter_map(|selected| selected.rebase(&previous, &location))
+            .collect();
+        for target in [
+            &mut column.selection_target,
+            &mut column.selection_anchor,
+            &mut column.load_cursor,
+        ] {
+            *target = target
+                .as_ref()
+                .and_then(|target| target.rebase(&previous, &location));
+        }
+        column.location = location;
     }
 
     pub fn set_show_hidden(&mut self, show_hidden: bool) {
@@ -516,14 +637,14 @@ impl NavigationState {
                         column.selection_anchor = None;
                     }
                 }
-                column.selected_locations.retain(|loc| {
-                    column
-                        .entries
-                        .iter()
-                        .any(|entry| &entry.location == loc && !entry.is_hidden)
-                });
+                column.retain_selected_locations(true);
             }
         }
+    }
+
+    /// Existing columns retain their local sort; new columns inherit the shared defaults.
+    pub fn set_default_preferences(&mut self, preferences: ViewPreferences) {
+        self.preferences = preferences;
     }
 
     pub fn column_preferences(&self, depth: usize) -> Option<ViewPreferences> {
@@ -538,19 +659,37 @@ impl NavigationState {
         if depth >= self.columns.len() {
             return None;
         }
-        self.preferences.sort_key = preferences.sort_key;
-        self.preferences.sort_direction = preferences.sort_direction;
-        self.preferences.folders_first = preferences.folders_first;
+        let recent = self.columns[depth].location.is_recent_root();
+        if !recent && preferences.sort_key == SortKey::Recency {
+            return None;
+        }
+        let preferences = if recent {
+            ViewPreferences {
+                folders_first: false,
+                ..preferences
+            }
+        } else {
+            preferences
+        };
+        if !recent && preferences.sort_key != SortKey::DeviceOrder {
+            self.preferences.sort_key = preferences.sort_key;
+            self.preferences.sort_direction = preferences.sort_direction;
+        }
+        if !recent {
+            self.preferences.folders_first = preferences.folders_first;
+        }
         let column = &mut self.columns[depth];
         let selected_location = column
             .selected
             .and_then(|position| column.entries.get(position))
             .map(|entry| entry.location.clone());
         column.preferences = preferences;
-        // Unstable: tie-breakers in `compare_entries` keep distinct entries ordered.
-        column
-            .entries
-            .sort_unstable_by(|left, right| compare_entries(left, right, preferences));
+        column.metadata_positions = None;
+        if preferences.sort_key != SortKey::DeviceOrder {
+            column
+                .entries
+                .sort_unstable_by(|left, right| compare_entries(left, right, preferences));
+        }
         column.selected = selected_location.and_then(|location| {
             column
                 .entries
@@ -606,6 +745,7 @@ impl NavigationState {
     ) -> Option<usize> {
         let (depth, column) = self.column_for_request_mut(request_id)?;
         column.select_first_on_load = false;
+        column.pending_selection.clear();
         column.truncated = truncated;
         column.can_trash = can_trash;
         column.can_delete = can_delete;
@@ -677,12 +817,16 @@ impl NavigationState {
         let Some(entry) = column.entries.get(position) else {
             return false;
         };
+        let location = entry.location.clone();
+        adopt_selected_locations(column, HashSet::from([location.clone()]), true);
         column.selected = Some(position);
-        column.selected_locations.clear();
-        column.selected_locations.insert(entry.location.clone());
-        column.selection_anchor = Some(entry.location.clone());
+        column.selection_anchor = Some(location);
         self.active_column = Some(depth);
         true
+    }
+
+    pub fn commit_selection(&mut self) {
+        self.selection_commit = true;
     }
 
     pub fn set_selection(
@@ -701,11 +845,13 @@ impl NavigationState {
         {
             return false;
         }
-        column.selected_locations = positions
+        let locations = positions
             .iter()
             .map(|position| column.entries[*position].location.clone())
             .collect();
-        column.selected = focused.filter(|position| positions.contains(position));
+        let commit = std::mem::take(&mut self.selection_commit);
+        adopt_selected_locations(column, locations, commit);
+        column.selected = focused.or(column.selected);
         if column.selection_anchor.is_none() {
             column.selection_anchor = column
                 .selected
@@ -714,6 +860,17 @@ impl NavigationState {
         }
         self.active_column = Some(depth);
         true
+    }
+
+    pub fn clear_active_selection(&mut self) -> Option<(usize, usize)> {
+        let depth = self.active_depth()?;
+        let column = self.columns.get_mut(depth)?;
+        if column.selected_locations.is_empty() {
+            return None;
+        }
+        let focused = column.selected.unwrap_or(0);
+        adopt_selected_locations(column, HashSet::new(), true);
+        Some((depth, focused))
     }
 
     pub fn extend_selection(&mut self, direction: i32) -> Option<(usize, usize, Vec<usize>)> {
@@ -737,7 +894,12 @@ impl NavigationState {
             first_visible
         });
 
-        let focused = if direction < 0 {
+        // Escape clears filled selection without dropping the cursor or leftover
+        // range anchor. Start a new range from that cursor instead of stepping.
+        let starting_from_empty = column.selected_locations.is_empty();
+        let focused = if starting_from_empty {
+            current
+        } else if direction < 0 {
             column.entries[..current]
                 .iter()
                 .rposition(is_visible)
@@ -752,28 +914,31 @@ impl NavigationState {
             current
         };
 
-        let anchor = column
-            .selection_anchor
-            .as_ref()
-            .and_then(|location| {
-                column
-                    .entries
-                    .iter()
-                    .position(|entry| &entry.location == location)
-            })
-            .unwrap_or(current);
-        if column.selection_anchor.is_none() {
-            column.selection_anchor = Some(column.entries[anchor].location.clone());
-        }
+        let anchor = if starting_from_empty {
+            current
+        } else {
+            column
+                .selection_anchor
+                .as_ref()
+                .and_then(|location| {
+                    column
+                        .entries
+                        .iter()
+                        .position(|entry| &entry.location == location)
+                })
+                .unwrap_or(current)
+        };
+        column.selection_anchor = Some(column.entries[anchor].location.clone());
         let start = anchor.min(focused);
         let end = anchor.max(focused);
         let selected_positions: Vec<usize> = (start..=end)
             .filter(|&index| is_visible(&column.entries[index]))
             .collect();
-        column.selected_locations = selected_positions
+        let locations = selected_positions
             .iter()
             .map(|&index| column.entries[index].location.clone())
             .collect();
+        adopt_selected_locations(column, locations, true);
         column.selected = Some(focused);
         self.active_column = Some(depth);
         Some((depth, focused, selected_positions))
@@ -807,19 +972,46 @@ impl NavigationState {
             return None;
         }
         column.selection_anchor = Some(column.entries[order[start]].location.clone());
-        column.selected_locations = positions
+        let locations = positions
             .iter()
             .map(|position| column.entries[*position].location.clone())
             .collect();
+        adopt_selected_locations(column, locations, true);
         column.selected = Some(focused);
         self.active_column = Some(depth);
         Some(positions)
+    }
+
+    pub fn selection_anchor_position(&self, depth: usize) -> Option<usize> {
+        let column = self.columns.get(depth)?;
+        let anchor = column.selection_anchor.as_ref()?;
+        column
+            .entries
+            .iter()
+            .position(|entry| &entry.location == anchor)
+    }
+
+    pub fn set_selection_anchor(&mut self, depth: usize, position: usize) -> bool {
+        let Some(column) = self.columns.get_mut(depth) else {
+            return false;
+        };
+        let Some(entry) = column.entries.get(position) else {
+            return false;
+        };
+        column.selection_anchor = Some(entry.location.clone());
+        true
     }
 
     pub fn selected_positions(&self, depth: usize) -> Vec<usize> {
         let Some(column) = self.columns.get(depth) else {
             return Vec::new();
         };
+        if column.selected_locations.is_empty() {
+            return Vec::new();
+        }
+        if let Some(position) = column.single_selected_position() {
+            return vec![position];
+        }
         column
             .entries
             .iter()
@@ -850,12 +1042,24 @@ impl NavigationState {
         let Some(column) = self.columns.get(depth) else {
             return Vec::new();
         };
+        if column.selected_locations.is_empty() {
+            return Vec::new();
+        }
+        if let Some(position) = column.single_selected_position() {
+            return vec![column.entries[position].clone()];
+        }
         column
             .entries
             .iter()
             .filter(|entry| column.selected_locations.contains(&entry.location))
             .cloned()
             .collect()
+    }
+
+    pub fn selection_is_load_cursor(&self) -> bool {
+        self.active_column
+            .and_then(|depth| self.columns.get(depth))
+            .is_some_and(|column| column.load_cursor.is_some())
     }
 
     pub fn move_selection(&mut self, direction: i32) -> Option<(usize, usize)> {
@@ -874,6 +1078,7 @@ impl NavigationState {
             column.selected = None;
             column.selected_locations.clear();
             column.selection_anchor = None;
+            column.load_cursor = None;
             return None;
         }
 
@@ -935,8 +1140,14 @@ impl NavigationState {
     }
 
     /// Moves the focus `page` visible entries at a time, clamped to the first and
-    /// last visible entry, for page-sized keyboard navigation.
-    pub fn page_selection(&mut self, direction: i32, page: usize) -> Option<(usize, usize)> {
+    /// last visible entry, for page-sized keyboard navigation. `order` is the
+    /// displayed source indices when the view is not in source order.
+    pub fn page_along(
+        &mut self,
+        direction: i32,
+        page: usize,
+        order: Option<&[usize]>,
+    ) -> Option<(usize, usize)> {
         if direction == 0 {
             return None;
         }
@@ -944,19 +1155,27 @@ impl NavigationState {
             .active_column
             .or_else(|| self.columns.len().checked_sub(1))?;
         let column = self.columns.get_mut(depth)?;
-        let show_hidden = column.preferences.show_hidden;
-        let visible: Vec<usize> = column
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, entry)| show_hidden || !entry.is_hidden)
-            .map(|(position, _)| position)
-            .collect();
+        let visible: Vec<usize> = match order {
+            Some(order) if !order.is_empty() => order.to_vec(),
+            _ => {
+                let show_hidden = column.preferences.show_hidden;
+                column
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, entry)| show_hidden || !entry.is_hidden)
+                    .map(|(position, _)| position)
+                    .collect()
+            }
+        };
         let last = visible.len().checked_sub(1)?;
         let steps = page.max(1);
-        let current = column
-            .selected
-            .and_then(|selected| visible.iter().position(|position| *position >= selected));
+        let current = column.selected.and_then(|selected| {
+            visible
+                .iter()
+                .position(|position| *position == selected)
+                .or_else(|| visible.iter().position(|position| *position >= selected))
+        });
         let target = match (current, direction < 0) {
             (None, true) => last,
             (None, false) => 0,
@@ -1010,6 +1229,36 @@ impl NavigationState {
 
     pub fn entry_at(&self, depth: usize, position: usize) -> Option<FileEntry> {
         self.columns.get(depth)?.entries.get(position).cloned()
+    }
+
+    pub fn column_entry_counts(&self, depth: usize) -> Option<ColumnEntryCounts> {
+        let column = self.columns.get(depth)?;
+        let show_hidden = column.preferences.show_hidden;
+        if let Some((cached_visibility, counts)) = column.entry_counts.get()
+            && cached_visibility == show_hidden
+        {
+            return Some(counts);
+        }
+        let mut folders = 0;
+        let mut files = 0;
+        let mut total = 0;
+        for entry in &column.entries {
+            if show_hidden || !entry.is_hidden {
+                total += 1;
+                if entry.is_directory() {
+                    folders += 1;
+                } else {
+                    files += 1;
+                }
+            }
+        }
+        let counts = ColumnEntryCounts {
+            total,
+            files,
+            folders,
+        };
+        column.entry_counts.set(Some((show_hidden, counts)));
+        Some(counts)
     }
 
     pub fn active_child_position(&self, depth: usize) -> Option<usize> {
@@ -1074,15 +1323,71 @@ impl NavigationState {
     }
 }
 
-/// Collapses a column's selection onto a single entry and anchors further
-/// range selections there.
 fn focus_only(column: &mut ColumnState, position: usize) {
+    let location = column.entries[position].location.clone();
+    adopt_selected_locations(column, HashSet::from([location.clone()]), true);
     column.selected = Some(position);
-    column.selected_locations.clear();
-    column
-        .selected_locations
-        .insert(column.entries[position].location.clone());
-    column.selection_anchor = Some(column.entries[position].location.clone());
+    column.selection_anchor = Some(location);
+}
+
+impl ColumnState {
+    fn invalidate_entry_indexes(&mut self) {
+        self.entry_counts.set(None);
+        self.metadata_positions = None;
+    }
+
+    fn retain_selected_locations(&mut self, hide_hidden: bool) {
+        if self.selected_locations.is_empty() {
+            return;
+        }
+        // Move the retained keys rather than cloning paths or scanning the directory
+        // separately for every selected item after Select All.
+        let mut previous = std::mem::take(&mut self.selected_locations);
+        self.selected_locations = self
+            .entries
+            .iter()
+            .filter(|entry| !hide_hidden || !entry.is_hidden)
+            .filter_map(|entry| previous.take(&entry.location))
+            .collect();
+    }
+
+    fn single_selected_position(&self) -> Option<usize> {
+        let position = self.selected?;
+        (self.selected_locations.len() == 1
+            && self
+                .selected_locations
+                .contains(&self.entries.get(position)?.location))
+        .then_some(position)
+    }
+
+    fn restore_pending_selection(&mut self) {
+        if self.pending_selection.is_empty() {
+            return;
+        }
+        let restored: HashSet<_> = self
+            .entries
+            .iter()
+            .filter(|entry| self.pending_selection.contains(&entry.location))
+            .map(|entry| entry.location.clone())
+            .collect();
+        if restored.is_empty() {
+            return;
+        }
+        self.selected_locations = restored;
+        if self.selected.is_none() {
+            self.selected = self
+                .entries
+                .iter()
+                .position(|entry| self.selected_locations.contains(&entry.location));
+        }
+    }
+}
+
+fn adopt_selected_locations(column: &mut ColumnState, locations: HashSet<Location>, commit: bool) {
+    if commit {
+        column.load_cursor = None;
+    }
+    column.selected_locations = locations;
 }
 
 fn apply_metadata_update(entry: &mut FileEntry, update: &MetadataUpdate) -> bool {
@@ -1101,7 +1406,37 @@ fn apply_metadata_update(entry: &mut FileEntry, update: &MetadataUpdate) -> bool
         entry.mode = update.mode.clone();
         changed = true;
     }
+    if update.image_dimensions != MetadataValue::Unknown
+        && entry.image_dimensions != update.image_dimensions
+    {
+        entry.image_dimensions = update.image_dimensions.clone();
+        changed = true;
+    }
+    if update.child_count != MetadataValue::Unknown && entry.child_count != update.child_count {
+        entry.child_count = update.child_count.clone();
+        changed = true;
+    }
+    if update.duration_seconds != MetadataValue::Unknown
+        && entry.duration_seconds != update.duration_seconds
+    {
+        entry.duration_seconds = update.duration_seconds.clone();
+        changed = true;
+    }
     changed
+}
+
+fn preferences_for_location(
+    mut preferences: ViewPreferences,
+    location: &Location,
+) -> ViewPreferences {
+    if location.is_recent_root() {
+        preferences.folders_first = false;
+        preferences.sort_key = SortKey::Recency;
+        preferences.sort_direction = SortDirection::Descending;
+    } else if location.is_camera_photo_root() {
+        preferences.sort_key = SortKey::DeviceOrder;
+    }
+    preferences
 }
 
 fn merge_entries(
@@ -1109,6 +1444,14 @@ fn merge_entries(
     mut incoming: Vec<FileEntry>,
     preferences: ViewPreferences,
 ) -> (Vec<FileEntry>, Vec<EntryInsertion>) {
+    if preferences.sort_key == SortKey::DeviceOrder {
+        let insertion = EntryInsertion {
+            position: existing.len(),
+            entries: incoming.clone(),
+        };
+        existing.append(&mut incoming);
+        return (existing, vec![insertion]);
+    }
     incoming.sort_unstable_by(|left, right| compare_entries(left, right, preferences));
     if existing.is_empty() {
         let insertion = EntryInsertion {
@@ -1161,7 +1504,9 @@ pub(crate) fn sort_entries(
     mut entries: Vec<FileEntry>,
     preferences: ViewPreferences,
 ) -> Vec<FileEntry> {
-    entries.sort_unstable_by(|left, right| compare_entries(left, right, preferences));
+    if preferences.sort_key != SortKey::DeviceOrder {
+        entries.sort_unstable_by(|left, right| compare_entries(left, right, preferences));
+    }
     entries
 }
 
@@ -1180,15 +1525,52 @@ fn remove_monitored_entry(
     }
 }
 
+fn upsert_monitored_entry(
+    entries: &mut Vec<FileEntry>,
+    entry: FileEntry,
+    preferences: ViewPreferences,
+    splices: &mut Vec<EntrySplice>,
+) {
+    if let Some(existing_position) = entries.iter().position(|e| e.location == entry.location) {
+        let is_same_position = {
+            let left_ok = existing_position == 0
+                || compare_entries(&entries[existing_position - 1], &entry, preferences)
+                    != Ordering::Greater;
+            let right_ok = existing_position + 1 >= entries.len()
+                || compare_entries(&entry, &entries[existing_position + 1], preferences)
+                    != Ordering::Greater;
+            left_ok && right_ok
+        };
+
+        if is_same_position {
+            entries[existing_position] = entry.clone();
+            splices.push(EntrySplice {
+                position: existing_position,
+                removed: 1,
+                entries: vec![entry],
+            });
+            return;
+        }
+
+        remove_monitored_entry(entries, &entry.location, splices);
+    }
+
+    insert_monitored_entry(entries, entry, preferences, splices);
+}
+
 fn insert_monitored_entry(
     entries: &mut Vec<FileEntry>,
     entry: FileEntry,
     preferences: ViewPreferences,
     splices: &mut Vec<EntrySplice>,
 ) {
-    let position = entries
-        .binary_search_by(|current| compare_entries(current, &entry, preferences))
-        .unwrap_or_else(|position| position);
+    let position = if preferences.sort_key == SortKey::DeviceOrder {
+        entries.len()
+    } else {
+        entries
+            .binary_search_by(|current| compare_entries(current, &entry, preferences))
+            .unwrap_or_else(|position| position)
+    };
     entries.insert(position, entry.clone());
     splices.push(EntrySplice {
         position,
@@ -1198,6 +1580,9 @@ fn insert_monitored_entry(
 }
 
 fn compare_entries(left: &FileEntry, right: &FileEntry, preferences: ViewPreferences) -> Ordering {
+    if preferences.sort_key == SortKey::DeviceOrder {
+        return Ordering::Equal;
+    }
     if preferences.folders_first {
         let directory_order = right.is_directory().cmp(&left.is_directory());
         if directory_order != Ordering::Equal {
@@ -1206,8 +1591,10 @@ fn compare_entries(left: &FileEntry, right: &FileEntry, preferences: ViewPrefere
     }
 
     let ordering = match preferences.sort_key {
+        SortKey::DeviceOrder => Ordering::Equal,
+        SortKey::Recency => compare_metadata(&left.recent_unix_seconds, &right.recent_unix_seconds),
         SortKey::Name => compare_display_names(&left.display_name, &right.display_name),
-        SortKey::Type => left.kind.cmp(&right.kind),
+        SortKey::Type => compare_entry_types(left, right),
         SortKey::Size => compare_metadata(&left.size, &right.size),
         SortKey::Modified => {
             compare_metadata(&left.modified_unix_seconds, &right.modified_unix_seconds)
@@ -1222,15 +1609,68 @@ fn compare_entries(left: &FileEntry, right: &FileEntry, preferences: ViewPrefere
         .then_with(|| left.location.compare(&right.location))
 }
 
-fn compare_display_names(left: &str, right: &str) -> Ordering {
-    let folded = if left.is_ascii() && right.is_ascii() {
-        left.bytes()
-            .map(|byte| byte.to_ascii_lowercase())
-            .cmp(right.bytes().map(|byte| byte.to_ascii_lowercase()))
+fn compare_entry_types(left: &FileEntry, right: &FileEntry) -> Ordering {
+    use crate::services::EntryType;
+    let left_type = crate::services::entry_type(left);
+    let right_type = crate::services::entry_type(right);
+    match (&left_type, &right_type) {
+        (EntryType::Other, EntryType::Other) => Ordering::Equal,
+        (EntryType::Other, _) => Ordering::Greater,
+        (_, EntryType::Other) => Ordering::Less,
+        _ => compare_display_names(left_type.description(), right_type.description()),
+    }
+}
+
+pub(crate) fn compare_display_names(left: &str, right: &str) -> Ordering {
+    if left.is_ascii() && right.is_ascii() {
+        natural_compare(left.as_bytes(), right.as_bytes())
     } else {
-        glib::casefold(left).cmp(&glib::casefold(right))
-    };
-    folded.then_with(|| left.cmp(right))
+        let left_folded = glib::casefold(left);
+        let right_folded = glib::casefold(right);
+        natural_compare(left_folded.as_bytes(), right_folded.as_bytes())
+    }
+    .then_with(|| left.cmp(right))
+}
+
+fn natural_compare(left: &[u8], right: &[u8]) -> Ordering {
+    let (mut li, mut ri) = (0, 0);
+    while li < left.len() && ri < right.len() {
+        if left[li].is_ascii_digit() && right[ri].is_ascii_digit() {
+            let (lv, lo) = take_number(left, li);
+            let (rv, ro) = take_number(right, ri);
+            let cmp = lv
+                .len()
+                .cmp(&rv.len())
+                .then_with(|| lv.cmp(rv))
+                .then_with(|| left[li..lo].cmp(&right[ri..ro]));
+            if cmp != Ordering::Equal {
+                return cmp;
+            }
+            li = lo;
+            ri = ro;
+        } else {
+            let lb = left[li].to_ascii_lowercase();
+            let rb = right[ri].to_ascii_lowercase();
+            if lb != rb {
+                return lb.cmp(&rb);
+            }
+            li += 1;
+            ri += 1;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn take_number(bytes: &[u8], start: usize) -> (&[u8], usize) {
+    let mut end = start;
+    while end < bytes.len() && bytes[end].is_ascii_digit() {
+        end += 1;
+    }
+    let mut significant = start;
+    while significant < end && bytes[significant] == b'0' {
+        significant += 1;
+    }
+    (&bytes[significant..end], end)
 }
 
 fn compare_metadata<T: Ord>(left: &MetadataValue<T>, right: &MetadataValue<T>) -> Ordering {

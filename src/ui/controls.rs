@@ -1,6 +1,42 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use gtk::prelude::*;
+
+pub(super) fn stepper(labels: [&str; 3]) -> (gtk::Box, [gtk::Button; 3]) {
+    let control = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    control.add_css_class("appearance-text-stepper");
+    control.set_hexpand(true);
+    control.set_halign(gtk::Align::End);
+    let buttons = std::array::from_fn(|index| {
+        let button = gtk::Button::new();
+        if index == 1 {
+            button.add_css_class("appearance-text-value");
+            button.set_hexpand(true);
+        } else {
+            let icon = if index == 0 {
+                crate::assets::icons::MINUS
+            } else {
+                crate::assets::icons::PLUS
+            };
+            let image = crate::assets::primary_icon(icon, 16);
+            image.set_halign(gtk::Align::Center);
+            image.set_valign(gtk::Align::Center);
+            button.set_child(Some(&image));
+            button.add_css_class("appearance-text-step");
+            super::accessibility::set_label(&button, labels[index]);
+        }
+        button.set_tooltip_text(Some(labels[index]));
+        control.append(&button);
+        button
+    });
+    (control, buttons)
+}
+
+pub(super) fn pane_header_action(widget: &impl IsA<gtk::Widget>) {
+    widget.add_css_class("column-header-action");
+    widget.set_valign(gtk::Align::Center);
+    widget.set_cursor_from_name(Some("pointer"));
+}
 
 pub(super) fn form_entry() -> gtk::Entry {
     let entry = gtk::Entry::new();
@@ -19,6 +55,29 @@ pub(super) fn form_label(text: &str) -> gtk::Label {
     label.add_css_class("action-dialog-field-label");
     label.set_xalign(0.0);
     label
+}
+
+pub(super) fn form_error_label() -> gtk::Label {
+    let label = gtk::Label::new(None);
+    label.add_css_class("form-field-error");
+    label.set_xalign(0.0);
+    label.set_visible(false);
+    label
+}
+
+pub(super) fn set_form_field_error(
+    field: &impl IsA<gtk::Widget>,
+    helper: &gtk::Label,
+    message: Option<&str>,
+) {
+    if let Some(message) = message {
+        field.add_css_class("error");
+        helper.set_text(message);
+        helper.set_visible(true);
+    } else {
+        field.remove_css_class("error");
+        helper.set_visible(false);
+    }
 }
 
 pub(super) fn form_check_button(label: &str) -> gtk::CheckButton {
@@ -159,7 +218,7 @@ pub(super) fn modal_layout_with_tone(
     confirm_label: &str,
     tone: ModalTone,
 ) -> ModalLayout {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let content = super::accessibility::dialog_box(title);
     content.add_css_class("action-dialog");
     content.set_halign(gtk::Align::Center);
     content.set_valign(gtk::Align::Center);
@@ -173,8 +232,8 @@ pub(super) fn modal_layout_with_tone(
     if tone == ModalTone::Danger {
         symbol.add_css_class("danger");
     }
-    symbol.set_size_request(40, 40);
     symbol.set_hexpand(false);
+    symbol.set_valign(gtk::Align::Fill);
     let icon = match tone {
         ModalTone::Accent => crate::assets::primary_icon(icon, 21),
         ModalTone::Danger => crate::assets::danger_icon(icon, 21),

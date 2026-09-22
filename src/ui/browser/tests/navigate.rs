@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use super::*;
 use std::time::{Duration, Instant};
@@ -20,6 +20,63 @@ fn wait_until(condition: impl Fn() -> bool) {
     }
 }
 
+#[test]
+fn reveal_location_selects_files_and_directories_by_native_path_in_every_mode() {
+    crate::test_support::gtk_test(
+        "ui::browser::tests::navigate::reveal_location_selects_files_and_directories_by_native_path_in_every_mode",
+        || {
+            use std::os::unix::ffi::OsStringExt;
+
+            let fixture = tempfile::tempdir().expect("reveal fixture");
+            let parent = fixture.path().join("containing folder");
+            std::fs::create_dir(&parent).expect("containing folder");
+            let file = parent.join("file with spaces #%.txt");
+            let directory = parent.join("directory result");
+            let native = parent.join(std::ffi::OsString::from_vec(b"native-\xff.txt".to_vec()));
+            std::fs::write(&file, "file").expect("file result");
+            std::fs::create_dir(&directory).expect("directory result");
+            std::fs::write(&native, "native").expect("native filename");
+            for mode in [BrowserMode::Columns, BrowserMode::Icons, BrowserMode::List] {
+                let view = BrowserView::new(
+                    Rc::new(crate::adapters::LocalFileSource),
+                    PeekBehavior::default(),
+                );
+                view.set_view_mode(mode);
+                let browser = view.browser();
+                let window = gtk::Window::builder()
+                    .child(&view.widget())
+                    .default_width(1000)
+                    .default_height(650)
+                    .build();
+                window.present();
+                for path in [&file, &directory, &native] {
+                    browser.navigate(Location::local(fixture.path()));
+                    for already_open in [false, true] {
+                        if already_open {
+                            assert!(view.show_filter_with_query("no-match"));
+                            settle();
+                        }
+                        let location = Location::local(path);
+                        view.reveal_location(location.clone());
+                        wait_until(|| {
+                            browser.active_location() == Some(Location::local(&parent))
+                                && browser.selected_entries().len() == 1
+                                && browser.selected_entries()[0].location == location
+                                && browser
+                                    .focused_entry()
+                                    .is_some_and(|e| e.location == location)
+                                && view.item_view_has_focus()
+                        });
+                        assert_eq!(browser.active_location(), Some(Location::local(&parent)));
+                    }
+                }
+                browser.clear_observer();
+                window.destroy();
+            }
+        },
+    );
+}
+
 fn present_single_pane(
     mode: BrowserMode,
 ) -> (
@@ -30,7 +87,7 @@ fn present_single_pane(
     tempfile::TempDir,
 ) {
     let home = tempfile::tempdir().expect("home fixture");
-    let place = tempfile::tempdir().expect("place fixture");
+    let place = tempfile::tempdir_in(home.path()).expect("place fixture");
     for index in 0..6 {
         std::fs::write(place.path().join(format!("file-{index:02}.txt")), "fixture")
             .expect("fixture file");
@@ -84,14 +141,14 @@ fn assert_navigate_lands_on_first_item(view: &BrowserView, browser: &crate::app:
 
 #[test]
 #[ignore = "requires a mapped GTK window; run this test alone"]
-fn icons_navigate_focuses_first_item_so_arrows_move_without_left_right() {
-    const CHILD: &str = "STRATA_ICONS_NAVIGATE_FOCUS_GTK_CHILD";
+fn navigate_focuses_first_item_in_single_pane_modes() {
+    const CHILD: &str = "STRATA_NAVIGATE_FOCUS_GTK_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let sandbox = tempfile::tempdir().expect("isolated settings");
         let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
             .args([
                 "--exact",
-                "ui::browser::tests::navigate::icons_navigate_focuses_first_item_so_arrows_move_without_left_right",
+                "ui::browser::tests::navigate::navigate_focuses_first_item_in_single_pane_modes",
                 "--nocapture",
                 "--ignored",
             ])
@@ -109,43 +166,115 @@ fn icons_navigate_focuses_first_item_so_arrows_move_without_left_right() {
     }
     crate::assets::prepare().expect("assets");
     crate::assets::register_icon_theme();
-    let (view, browser, window, _home, place) = present_single_pane(BrowserMode::Icons);
-    browser.navigate(Location::local(place.path()));
-    assert_navigate_lands_on_first_item(&view, &browser);
-    window.destroy();
-    browser.clear_observer();
+    for mode in [BrowserMode::Icons, BrowserMode::List] {
+        let (view, browser, window, _home, _place) = present_single_pane(mode);
+        browser.select(0, 0);
+        view.activate_focused();
+        assert_navigate_lands_on_first_item(&view, &browser);
+        window.destroy();
+        browser.clear_observer();
+    }
+}
+
+fn assert_parent_paste_stays_in_current_directory(
+    view: &BrowserView,
+    browser: &crate::app::Browser,
+    current: &Location,
+    mode: BrowserMode,
+) {
+    if let Some(other) = (0..2).find(|position| {
+        browser
+            .entry_at(0, *position)
+            .is_some_and(|entry| entry.display_name == "documents")
+    }) {
+        browser.set_selection(0, &[other], Some(other));
+    }
+    view.state.sync_mode_selection();
+    let selected = browser.selected_entries();
+    let names: Vec<&str> = selected
+        .iter()
+        .map(|entry| entry.display_name.as_str())
+        .collect();
+    let destination = paste_destination(
+        &selected,
+        browser.active_location(),
+        browser.selection_is_load_cursor(),
+    );
+    assert_eq!(
+        destination,
+        Some(current.clone()),
+        "{mode:?}: paste after parent must target the parent, not {names:?} (load_cursor={})",
+        browser.selection_is_load_cursor()
+    );
+}
+
+fn wait_for_loaded_count(browser: &crate::app::Browser, location: &Location, count: usize) {
+    wait_until(|| {
+        browser.column_snapshot(0).is_some_and(|snapshot| {
+            !snapshot.loading && snapshot.count == count && snapshot.location == *location
+        })
+    });
 }
 
 #[test]
-#[ignore = "requires a mapped GTK window; run this test alone"]
-fn list_navigate_focuses_first_item_so_arrows_move() {
-    const CHILD: &str = "STRATA_LIST_NAVIGATE_FOCUS_GTK_CHILD";
-    if std::env::var_os(CHILD).is_none() {
-        let sandbox = tempfile::tempdir().expect("isolated settings");
-        let status = std::process::Command::new(std::env::current_exe().expect("test executable"))
-            .args([
-                "--exact",
-                "ui::browser::tests::navigate::list_navigate_focuses_first_item_so_arrows_move",
-                "--nocapture",
-                "--ignored",
-            ])
-            .env(CHILD, "1")
-            .env("XDG_CONFIG_HOME", sandbox.path().join("config"))
-            .env("XDG_CACHE_HOME", sandbox.path().join("cache"))
-            .env("XDG_DATA_HOME", sandbox.path().join("data"))
-            .status()
-            .expect("GTK test starts");
-        assert!(status.success());
-        return;
-    }
-    if gtk::init().is_err() {
-        return;
-    }
-    crate::assets::prepare().expect("assets");
-    crate::assets::register_icon_theme();
-    let (view, browser, window, _home, place) = present_single_pane(BrowserMode::List);
-    browser.navigate(Location::local(place.path()));
-    assert_navigate_lands_on_first_item(&view, &browser);
-    window.destroy();
-    browser.clear_observer();
+fn parent_paste_uses_the_current_directory_in_single_pane_modes() {
+    crate::test_support::gtk_test(
+        "ui::browser::tests::navigate::parent_paste_uses_the_current_directory_in_single_pane_modes",
+        || {
+            for mode in [BrowserMode::Icons, BrowserMode::List] {
+                let fixture = tempfile::tempdir().expect("paste fixture");
+                std::fs::create_dir_all(fixture.path().join("archive")).expect("archive");
+                std::fs::create_dir_all(fixture.path().join("documents")).expect("documents");
+                std::fs::write(fixture.path().join("documents/notes.txt"), "notes").expect("notes");
+                let root = Location::local(fixture.path());
+                let documents = Location::local(fixture.path().join("documents"));
+                let view = BrowserView::new(
+                    Rc::new(crate::adapters::LocalFileSource),
+                    PeekBehavior::default(),
+                );
+                let browser = view.browser();
+                view.set_view_mode(mode);
+                let window = gtk::Window::builder()
+                    .child(&view.widget())
+                    .default_width(1000)
+                    .default_height(650)
+                    .build();
+                window.present();
+                browser.navigate(documents.clone());
+                wait_for_loaded_count(&browser, &documents, 1);
+                settle();
+                browser.select(0, 0);
+                browser.parent();
+                wait_for_loaded_count(&browser, &root, 2);
+                settle();
+                assert_parent_paste_stays_in_current_directory(&view, &browser, &root, mode);
+
+                if mode == BrowserMode::List {
+                    let documents_index = (0..2)
+                        .find(|position| {
+                            browser
+                                .entry_at(0, *position)
+                                .is_some_and(|entry| entry.display_name == "documents")
+                        })
+                        .expect("documents");
+                    browser.activate(0, documents_index);
+                    wait_until(|| {
+                        browser.active_location() == Some(documents.clone())
+                            && browser
+                                .column_snapshot(1)
+                                .is_some_and(|snapshot| !snapshot.loading && snapshot.count == 1)
+                    });
+                    settle();
+                    browser.select(1, 0);
+                    browser.parent();
+                    wait_for_loaded_count(&browser, &root, 2);
+                    settle();
+                    assert_parent_paste_stays_in_current_directory(&view, &browser, &root, mode);
+                }
+
+                window.destroy();
+                browser.clear_observer();
+            }
+        },
+    );
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: MIT
 
 use std::{
     fs,
@@ -7,9 +7,10 @@ use std::{
 
 use super::{
     APPLICATION_ICON, DESKTOP_ENTRY, UpdateMethod, aur_repository_version_from_response,
-    desktop_entry_with_exec, find_binaries, first_hash_token, package_repository_version_for,
-    parse_aur_package_version, parse_package_version, refresh_desktop_metadata,
-    repository_database_version, stage_binary_path, stage_workdir, update_method_for,
+    desktop_entry_with_exec, file_sha256_hex, find_binaries, first_hash_token,
+    package_repository_version_for, parse_aur_package_version, parse_package_version,
+    refresh_desktop_metadata, repository_database_version, stage_binary_path, stage_workdir,
+    update_method_for, verify_archive_checksum,
 };
 
 const PACKAGED_ENTRY: &str =
@@ -229,6 +230,33 @@ fn first_hash_token_rejects_empty_input() {
 }
 
 #[test]
+fn archive_checksum_hashes_in_process() {
+    let dir = scratch_dir("checksum", line!());
+    let empty = dir.join("empty.tar.gz");
+    fs::write(&empty, b"").expect("write empty archive");
+    const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    assert_eq!(file_sha256_hex(&empty).expect("hash empty"), EMPTY);
+    verify_archive_checksum(&empty, &format!("{EMPTY}  empty.tar.gz\n"))
+        .expect("empty digest matches");
+
+    let nonempty = dir.join("payload.tar.gz");
+    fs::write(&nonempty, b"abc").expect("write nonempty archive");
+    const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert_eq!(file_sha256_hex(&nonempty).expect("hash abc"), ABC);
+    verify_archive_checksum(
+        &nonempty,
+        "BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD  payload.tar.gz\n",
+    )
+    .expect("nonempty digest matches");
+    assert_eq!(
+        verify_archive_checksum(&nonempty, EMPTY).expect_err("mismatch"),
+        "Downloaded update failed checksum verification"
+    );
+
+    let _removed = fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn find_binaries_locates_a_single_nested_binary() {
     let dir = std::env::temp_dir().join(format!(
         "strata-update-install-test-{}-{}",
@@ -298,6 +326,86 @@ fn desktop_entry_exec_quotes_paths_containing_spaces() {
     let entry = desktop_entry_with_exec(PACKAGED_ENTRY, Path::new("/opt/my apps/strata"));
 
     assert!(entry.contains("Exec=\"/opt/my apps/strata\" %U\n"));
+}
+
+#[test]
+fn desktop_entry_exec_escapes_reserved_characters_and_percent_signs() {
+    for (path, encoded) in [
+        ("/opt/50%/strata", "/opt/50%%/strata"),
+        ("/opt/%U%f%%/strata", "/opt/%%U%%f%%%%/strata"),
+        (
+            "/opt/it's \"quoted\" `$HOME\\strata",
+            r#""/opt/it's \\"quoted\\" \\`\\$HOME\\\\strata""#,
+        ),
+        (
+            "/opt/line\nbreak\tand\rreturn/strata",
+            r#""/opt/line\nbreak\tand\rreturn/strata""#,
+        ),
+    ] {
+        let entry = desktop_entry_with_exec(PACKAGED_ENTRY, Path::new(path));
+        assert!(entry.contains(&format!("Exec={encoded} %U\n")), "{entry}");
+    }
+}
+
+#[test]
+fn desktop_entry_exec_round_trips_string_and_argument_escaping() {
+    for character in [
+        ' ', '\t', '\n', '\r', '"', '\'', '\\', '>', '<', '~', '|', '&', ';', '$', '*', '?', '#',
+        '(', ')', '`',
+    ] {
+        let path = format!("/opt/before{character}after/strata");
+        let entry = desktop_entry_with_exec(PACKAGED_ENTRY, Path::new(&path));
+        assert!(entry.contains("Exec=\""), "{entry}");
+        let key_file = glib::KeyFile::new();
+        key_file
+            .load_from_data(&entry, glib::KeyFileFlags::NONE)
+            .expect("valid desktop entry");
+        let command = key_file
+            .string("Desktop Entry", "Exec")
+            .expect("Exec string");
+        let arguments = glib::shell_parse_argv(command).expect("valid quoted arguments");
+        assert_eq!(arguments, [path.as_str(), "%U"], "{entry}");
+    }
+}
+
+#[test]
+fn desktop_entry_exec_launches_reserved_characters_and_preserves_uri_arguments() {
+    use gio::prelude::AppInfoExt;
+    use std::{os::unix::fs::PermissionsExt, time::Duration};
+
+    let dir = scratch_dir("exec-launch", line!());
+    let executable = dir.join("strata ' \" `$\\");
+    fs::write(
+        &executable,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"${0%/*}/arguments\"\n",
+    )
+    .expect("write argument recorder");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o755))
+        .expect("make recorder executable");
+    let key_file = glib::KeyFile::new();
+    key_file
+        .load_from_data(
+            &desktop_entry_with_exec(PACKAGED_ENTRY, &executable),
+            glib::KeyFileFlags::NONE,
+        )
+        .expect("load desktop entry");
+    let app = gio_unix::DesktopAppInfo::from_keyfile(&key_file).expect("valid launcher");
+    let uris = ["https://example.org/one%20two", "https://example.org/%25U"];
+    app.launch_uris(&uris, None::<&gio::AppLaunchContext>)
+        .expect("launch recorder");
+    let expected = format!("{}\n", uris.join("\n"));
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if fs::read_to_string(dir.join("arguments")).ok().as_deref() == Some(&expected) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "arguments not received"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    fs::remove_dir_all(dir).expect("cleanup");
 }
 
 #[test]

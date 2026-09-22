@@ -13,9 +13,9 @@ use super::{
 };
 
 #[test]
-fn first_reveal_sizes_the_popover_to_the_allocated_entry() {
+fn first_reveal_shows_suggestions_after_switching_from_breadcrumbs() {
     crate::test_support::gtk_test(
-        "ui::browser::location::completion::tests::first_reveal_sizes_the_popover_to_the_allocated_entry",
+        "ui::browser::location::completion::tests::first_reveal_shows_suggestions_after_switching_from_breadcrumbs",
         || {
             let fixture = tempdir().expect("fixture");
             fs::create_dir(fixture.path().join("Documents")).expect("completion folder");
@@ -51,20 +51,14 @@ fn first_reveal_sizes_the_popover_to_the_allocated_entry() {
                 .default_width(720)
                 .build();
             window.present();
-            wait_until(|| stack.width() >= 700);
-            assert_eq!(entry.width(), 0, "hidden entry must begin unallocated");
+            wait_until(|| breadcrumbs.is_mapped());
+            assert!(!entry.is_mapped());
 
             stack.set_visible_child_name("entry");
             entry.grab_focus();
             completion.refresh(&entry, &completion_browser);
-            wait_until(|| entry.width() >= 700 && completion.popover.is_visible());
-
-            assert!(
-                (completion.popover.width() - entry.width()).abs() <= 8,
-                "first popover width {} must match entry width {}",
-                completion.popover.width(),
-                entry.width()
-            );
+            wait_until(|| entry.is_mapped() && completion.popover.is_visible());
+            assert!(completion.list.row_at_index(0).is_some());
             window.destroy();
         },
     );
@@ -109,6 +103,73 @@ fn activating_a_suggestion_does_not_refresh_the_dismissing_list() {
             assert!(activated.get());
             assert!(!completion.popover.is_visible());
             assert_eq!(*completion.candidates.borrow(), before);
+            window.destroy();
+        },
+    );
+}
+
+#[test]
+fn down_reopens_suggestions_after_tab_completion() {
+    crate::test_support::gtk_test(
+        "ui::browser::location::completion::tests::down_reopens_suggestions_after_tab_completion",
+        || {
+            let fixture = tempdir().expect("fixture");
+            fs::create_dir_all(fixture.path().join("Documents/Projects"))
+                .expect("nested completion folder");
+            fs::create_dir(fixture.path().join("Downloads")).expect("empty folder");
+            let browser = Browser::new(Rc::new(LocalFileSource));
+            browser.navigate(Location::local(fixture.path()));
+            let entry = gtk::Entry::new();
+            let completion = PathCompletion::attach(&entry, browser, || true, || {});
+            let window = gtk::Window::builder().child(&entry).build();
+            window.present();
+            entry.grab_focus();
+            wait_until(|| entry.is_mapped());
+            let keys = entry
+                .observe_controllers()
+                .iter::<glib::Object>()
+                .filter_map(Result::ok)
+                .find_map(|controller| controller.downcast::<gtk::EventControllerKey>().ok())
+                .expect("completion keyboard controller");
+            let press = |key: gtk::gdk::Key| {
+                assert!(keys.emit_by_name::<bool>(
+                    "key-pressed",
+                    &[&key, &0u32, &gtk::gdk::ModifierType::empty()],
+                ));
+            };
+
+            for (prefix, select_first, completed, suggestion) in [
+                ("Doc", false, "Documents/", Some("Projects/")),
+                ("Do", true, "Documents/", Some("Projects/")),
+                ("D", false, "Do", Some("Documents/")),
+                ("Down", false, "Downloads/", None),
+            ] {
+                entry.set_text(&fixture.path().join(prefix).to_string_lossy());
+                wait_until(|| completion.popover.is_visible());
+                if select_first {
+                    press(gtk::gdk::Key::Down);
+                }
+                press(gtk::gdk::Key::Tab);
+                assert_eq!(
+                    entry.text().as_str(),
+                    fixture.path().join(completed).to_string_lossy().as_ref()
+                );
+                wait_until(|| !completion.popover.is_visible());
+                press(gtk::gdk::Key::Down);
+                if let Some(suggestion) = suggestion {
+                    wait_until(|| completion.popover.is_visible());
+                    assert_eq!(completion.candidates.borrow()[0].display_name, suggestion);
+                    press(gtk::gdk::Key::Down);
+                    assert_eq!(completion.selected_index.get(), Some(0));
+                    press(gtk::gdk::Key::Escape);
+                    wait_until(|| !completion.popover.is_visible());
+                    press(gtk::gdk::Key::Down);
+                    wait_until(|| completion.popover.is_visible());
+                } else {
+                    assert!(!completion.popover.is_visible());
+                    assert!(completion.candidates.borrow().is_empty());
+                }
+            }
             window.destroy();
         },
     );

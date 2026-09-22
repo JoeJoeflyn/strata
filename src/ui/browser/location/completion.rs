@@ -328,16 +328,23 @@ impl PathCompletion {
             self.dismiss();
             return;
         }
-        let width = entry.width();
+        if entry.width() <= 0 {
+            return;
+        }
+        // Include the entry's CSS padding and border, not just its text area.
+        let Some(bounds) = entry.compute_bounds(entry) else {
+            return;
+        };
+        let width = bounds.width().ceil() as i32;
         if width <= 0 {
             return;
         }
         self.popover.set_size_request(width, -1);
         self.popover.set_pointing_to(Some(&gdk::Rectangle::new(
-            0,
-            0,
+            bounds.x().floor() as i32,
+            bounds.y().floor() as i32,
             width,
-            entry.height().max(32),
+            (bounds.height().ceil() as i32).max(32),
         )));
         self.popover.set_offset(0, 6);
         self.pending_reveal.set(false);
@@ -450,6 +457,14 @@ impl PathCompletion {
         }
     }
 
+    fn complete_text(&self, entry: &gtk::Entry, replacement: &str) {
+        self.suppress_refresh.set(true);
+        entry.set_text(replacement);
+        entry.set_position(-1);
+        self.suppress_refresh.set(false);
+        self.dismiss();
+    }
+
     fn handle_tab(self: &Rc<Self>, entry: &gtk::Entry, browser: &Browser) {
         if !self.popover.is_visible() {
             self.refresh(entry, browser);
@@ -462,15 +477,13 @@ impl PathCompletion {
         if let Some(index) = self.selected_index.get()
             && let Some(candidate) = candidates.get(index)
         {
-            entry.set_text(&candidate.replacement);
-            entry.set_position(-1);
+            self.complete_text(entry, &candidate.replacement);
             return;
         }
 
         if candidates.len() == 1 {
             let candidate = &candidates[0];
-            entry.set_text(&candidate.replacement);
-            entry.set_position(-1);
+            self.complete_text(entry, &candidate.replacement);
             return;
         }
 
@@ -478,8 +491,7 @@ impl PathCompletion {
         if let Some(common) = longest_common_prefix(&replacements) {
             let current_text = entry.text().to_string();
             if common.len() > current_text.len() {
-                entry.set_text(&common);
-                entry.set_position(-1);
+                self.complete_text(entry, &common);
                 return;
             }
         }

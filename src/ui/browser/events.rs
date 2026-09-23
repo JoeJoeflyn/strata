@@ -1054,11 +1054,6 @@ impl ViewState {
         self.mode_views.borrow().prune_stale_search_results();
     }
 
-    /// Columns mode mirrors the keyboard selection in the next pane, Finder-style:
-    /// a folder shows its contents without taking focus, a previewable file opens
-    /// the preview pane, and any other file closes the child pane. Debounced so
-    /// fast arrow presses only load the landing item, and a column close cannot
-    /// reopen itself.
     fn mirror_focused_folder(self: &Rc<Self>, depth: usize, position: Option<usize>) {
         if let Some(source) = self.pending_mirror.borrow_mut().take() {
             source.remove();

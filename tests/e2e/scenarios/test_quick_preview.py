@@ -20,13 +20,6 @@ PREVIEW_FIXTURE = {
 
 @pytest.fixture
 def root(strata) -> str:
-    """The fixture directory, named explicitly.
-
-    Columns mirrors a keyboard-selected folder into the next pane, so
-    assertions name the pane they are about rather than relying on the
-    deepest one.
-    """
-
     return strata.fixture.root.name
 
 

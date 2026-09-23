@@ -1072,6 +1072,42 @@ fn background_click_keeps_the_scrolled_column_in_place() {
 }
 
 #[test]
+fn entering_mirrored_column_selects_first_visible_entry() {
+    crate::test_support::gtk_test(
+        "ui::browser::tests::focus::entering_mirrored_column_selects_first_visible_entry",
+        || {
+            let fixture = tempfile::tempdir().expect("directory fixture");
+            std::fs::create_dir(fixture.path().join("folder")).expect("folder");
+            std::fs::create_dir(fixture.path().join("folder/.hidden")).expect("hidden directory");
+            std::fs::write(fixture.path().join("folder/visible.txt"), "visible")
+                .expect("visible file");
+            let view = BrowserView::new(
+                Rc::new(crate::adapters::LocalFileSource),
+                PeekBehavior::default(),
+            );
+            let browser = view.browser();
+            browser.navigate(Location::local(fixture.path()));
+            wait_until(|| browser.column_snapshot(0).is_some_and(|s| !s.loading));
+            view.keyboard_navigation();
+            browser.select(0, 0);
+            wait_until(|| browser.column_snapshot(1).is_some_and(|s| !s.loading));
+            assert_eq!(browser.active_depth(), Some(0));
+
+            browser.enter_focused_directory();
+            assert_eq!(browser.active_depth(), Some(1));
+            assert_eq!(
+                browser
+                    .focused_item()
+                    .map(|(_, _, entry)| entry.display_name),
+                Some("visible.txt".into())
+            );
+            assert_eq!(browser.selected_entries().len(), 1);
+            browser.clear_observer();
+        },
+    );
+}
+
+#[test]
 fn column_keyboard_selection_mirrors_folder_and_closes_on_file() {
     crate::test_support::gtk_test(
         "ui::browser::tests::focus::column_keyboard_selection_mirrors_folder_and_closes_on_file",

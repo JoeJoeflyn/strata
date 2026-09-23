@@ -735,8 +735,6 @@ pub struct Browser {
     pending_sort: Cell<Option<(u64, usize)>>,
     preferences: Cell<ViewPreferences>,
     chooser_mode: Cell<bool>,
-    /// Set while emitting the refocus event after a column closes, so the
-    /// Columns-mode mirror does not reopen the folder it just truncated.
     suppress_child_mirror: Cell<bool>,
     observers: RefCell<Vec<Observer>>,
     preferences_observers: RefCell<Vec<PreferencesObserver>>,
@@ -1017,8 +1015,6 @@ impl Browser {
         self.descend_with_selection(parent_depth, location, false, false);
     }
 
-    /// Opens `location` in the column after `parent_depth` while the parent stays
-    /// the active column — Columns-mode selection mirroring, like Finder.
     pub fn show_child(self: &Rc<Self>, parent_depth: usize, location: Location) {
         self.descend_with_selection(parent_depth, location, false, true);
     }
@@ -1037,8 +1033,6 @@ impl Browser {
         self.close_peek();
         if location.native_path().is_some() {
             match self.source.validate_location(&location) {
-                // The selection mirror stays quiet: the column opens and shows
-                // the load failure inline instead of raising a dialog.
                 Err(error) if !keep_parent_active => {
                     self.emit(BrowserEvent::NavigationRejected {
                         parent_depth,
@@ -1218,8 +1212,6 @@ impl Browser {
         }
     }
 
-    /// Emits the refocus event that follows a column close with the
-    /// selection mirror suppressed so the parent folder is not reopened.
     fn emit_suppressed_focus(&self, depth: usize, position: Option<usize>) {
         let was = self.suppress_child_mirror.replace(true);
         self.emit(BrowserEvent::FocusChanged { depth, position });
@@ -2606,12 +2598,6 @@ impl Browser {
         let focus = self.state.borrow_mut().focus_child();
         if let Some((depth, position)) = focus {
             self.emit(BrowserEvent::FocusChanged { depth, position });
-            if position.is_none() {
-                // The mirrored column loads unselected; entering it picks the
-                // first entry like a fresh descend.
-                self.select_first_on_load(depth);
-                self.select(depth, 0);
-            }
         }
     }
 

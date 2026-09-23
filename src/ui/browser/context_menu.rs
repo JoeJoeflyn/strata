@@ -181,7 +181,7 @@ fn context_search_active(state: &ViewState, depth: usize) -> bool {
         .columns
         .borrow()
         .get(depth)
-        .is_some_and(|column| column.search_handle.borrow().is_some())
+        .is_some_and(|column| column.recursive_search_active.get())
 }
 
 fn context_filter_or_search_active(state: &ViewState, depth: usize) -> bool {
@@ -189,7 +189,7 @@ fn context_filter_or_search_active(state: &ViewState, depth: usize) -> bool {
         return state.mode_views.borrow().filter_active();
     }
     state.columns.borrow().get(depth).is_some_and(|column| {
-        column.search_handle.borrow().is_some()
+        column.recursive_search_active.get()
             || column.map.has_query()
             || !column.filter_entry.text().trim().is_empty()
     })
@@ -618,6 +618,8 @@ fn install_secondary_release_retarget(
         None::<(glib::WeakRef<gtk::Widget>, gtk::EventControllerLegacy)>,
     ));
     let installed_for_show = installed.clone();
+    // The trigger owns the menu; its show handler and root controller must not retain it.
+    let reopen = Rc::downgrade(&reopen);
     let weak_widget = widget.downgrade();
     let weak_popover = popover.downgrade();
     popover.connect_show(move |_| {
@@ -664,8 +666,9 @@ fn install_secondary_release_retarget(
             let target = root
                 .compute_point(&widget, &gtk::graphene::Point::new(x as f32, y as f32))
                 .map(|point| (f64::from(point.x()), f64::from(point.y())));
-            if let Some((x, y)) = target {
-                let reopen = reopen.clone();
+            if let Some((x, y)) = target
+                && let Some(reopen) = reopen.upgrade()
+            {
                 glib::idle_add_local_once(move || {
                     reopen(x, y, None);
                 });
@@ -701,7 +704,7 @@ pub(in crate::ui) fn install_item_context_menu(
         let columns = state.columns.borrow();
         let search = columns.get(depth).filter(|column| {
             state.mode_views.borrow().mode() == BrowserMode::Columns
-                && column.search_handle.borrow().is_some()
+                && column.recursive_search_active.get()
         });
         let target = if let Some(column) = search {
             (
@@ -870,6 +873,8 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     permanent_delete_multiple.add_css_class("danger");
     let compress_multiple =
         item_context_option(crate::assets::icons::FILE_ARCHIVE, "Compress…", "");
+    let properties_multiple =
+        item_context_option(crate::assets::icons::INFO, "Properties", "Alt+Enter");
     multiple_open.append(&open_multiple);
     multiple_open.append(&open_with_multiple);
     multiple_open.append(&restore_multiple);
@@ -887,6 +892,8 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
     let multiple_archive_separator = gtk::Separator::new(gtk::Orientation::Horizontal);
     multiple.append(&compress_multiple);
     multiple.append(&multiple_archive_separator);
+    multiple.append(&properties_multiple);
+    multiple.append(&gtk::Separator::new(gtk::Orientation::Horizontal));
     multiple.append(&trash_multiple);
     multiple.append(&permanent_delete_multiple);
     multiple.set_visible(false);
@@ -1245,6 +1252,15 @@ pub(in crate::ui) fn install_resolved_item_context_menu(
             state.show_entry_properties_at(entry, depth);
         }
     });
+    connect_selection_action(
+        &properties_multiple,
+        &popover,
+        state,
+        &target,
+        |state, entries| {
+            state.show_selection_properties(entries);
+        },
+    );
     let weak = Rc::downgrade(state);
     let paths_target = target.clone();
     let paths_popover = popover.downgrade();
@@ -1488,7 +1504,7 @@ fn focus_search_result(state: &ViewState, depth: usize, entry: &FileEntry) {
     let Some(column) = state.columns.borrow().get(depth).cloned() else {
         return;
     };
-    if column.search_handle.borrow().is_none() {
+    if !column.recursive_search_active.get() {
         return;
     }
     let position = column

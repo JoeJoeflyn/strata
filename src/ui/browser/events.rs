@@ -623,7 +623,6 @@ impl ViewState {
                     } else {
                         "Copying items"
                     },
-                    "Cancelling will not undo completed changes",
                     Rc::new(move || browser.cancel_file_operation()),
                 );
                 self.update_transfer_progress(0, 0, None);
@@ -640,7 +639,7 @@ impl ViewState {
                 if !moved_locations.is_empty() {
                     self.complete_cut_transfer(moved_locations);
                 }
-                self.dismiss_file_operation_progress();
+                self.complete_file_operation_progress();
                 self.prune_stale_search_results();
             }
             BrowserEvent::DeletionStarted { total } => {
@@ -649,7 +648,6 @@ impl ViewState {
                     *total,
                     crate::assets::icons::TRASH,
                     "Deleting items",
-                    "Cancelling will not undo completed changes",
                     Rc::new(move || browser.cancel_file_operation()),
                 );
             }
@@ -661,7 +659,7 @@ impl ViewState {
                     self.deferred_delete_empty_depth.set(Some(depth));
                     let succeeded = *succeeded;
                     let weak = Rc::downgrade(self);
-                    self.dismiss_file_operation_progress_then(move || {
+                    self.complete_file_operation_progress_then(move || {
                         glib::idle_add_local_once(move || {
                             let Some(state) = weak.upgrade() else {
                                 return;
@@ -689,14 +687,13 @@ impl ViewState {
                     *total,
                     crate::assets::icons::FOLDER,
                     "Restoring items",
-                    "Cancelling will not undo completed changes",
                     Rc::new(move || browser.cancel_file_operation()),
                 );
             }
             BrowserEvent::RestorationProgress { completed, total } => {
                 self.update_item_progress(*completed, *total);
             }
-            BrowserEvent::RestorationFinished => self.dismiss_file_operation_progress(),
+            BrowserEvent::RestorationFinished => self.complete_file_operation_progress(),
             BrowserEvent::OperationFailed { message } => {
                 self.suppress_scroll_after_drop.set(false);
                 self.pending_new_entry.take();
@@ -802,7 +799,6 @@ impl ViewState {
                     *total,
                     crate::assets::icons::FILE_ARCHIVE,
                     "Processing archive…",
-                    "Cancelling will not undo completed changes",
                     Rc::new(move || browser.cancel_file_operation()),
                 );
                 self.update_archive_progress(0, *total);
@@ -819,7 +815,7 @@ impl ViewState {
                     let weak = Rc::downgrade(self);
                     let select_name = select_name.clone();
                     let navigation_generation = self.browser.navigation_generation();
-                    self.dismiss_file_operation_progress_then(move || {
+                    self.complete_file_operation_progress_then(move || {
                         if let Some(state) = weak.upgrade()
                             && state.browser.navigation_generation() == navigation_generation
                         {
@@ -834,7 +830,7 @@ impl ViewState {
                 {
                     let weak = Rc::downgrade(self);
                     let select_name = select_name.clone();
-                    self.dismiss_file_operation_progress_then(move || {
+                    self.complete_file_operation_progress_then(move || {
                         glib::idle_add_local_once(move || {
                             let Some(state) = weak.upgrade() else {
                                 return;
@@ -866,7 +862,7 @@ impl ViewState {
                     let weak = Rc::downgrade(self);
                     let select_name = select_name.clone();
                     let navigation_generation = self.browser.navigation_generation();
-                    self.dismiss_file_operation_progress_then(move || {
+                    self.complete_file_operation_progress_then(move || {
                         if let Some(state) = weak.upgrade()
                             && state.browser.navigation_generation() == navigation_generation
                         {

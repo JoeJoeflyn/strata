@@ -751,6 +751,7 @@ impl ViewState {
             } => {
                 self.suppress_scroll_after_drop.set(false);
                 self.pending_archive_destination.take();
+                self.dismiss_file_operation_progress();
                 self.browser.refresh_after_cancellation(affected_locations);
                 let message = format!(
                     "{} completed, {} failed, and {} not attempted.\n\nCompleted changes were not reverted.",

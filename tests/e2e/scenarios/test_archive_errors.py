@@ -35,7 +35,10 @@ def test_cancel_compression_stops_before_publishing_and_allows_another_operation
         lambda: (dialog := strata.dialog()) is not None and dialog.name == "Operation cancelled",
         "compression worker to stop and report cancellation",
     )
-    assert not strata.window.find(role="progress bar")
+    strata.wait(
+        lambda: strata.window.find(role="progress bar") is None,
+        "progress toast to finish dismissing",
+    )
     assert not list(fixture.root.glob(".strata-compression-*"))
     assert not list(fixture.root.glob("*.7z"))
     assert not list(fixture.root.glob("*.tar.gz"))
@@ -72,7 +75,10 @@ def test_invalid_archive_reports_damage_and_allows_another_extraction(strata, na
         "the archive error dialog to replace the progress dialog",
     )
     assert dialog.find(role="label", name="This file is not a valid archive or is damaged.")
-    assert not strata.window.find(role="progress bar")
+    strata.wait(
+        lambda: strata.window.find(role="progress bar") is None,
+        "progress toast to finish dismissing",
+    )
     assert fixture.path(name).read_bytes() == b"This is harmless text, not an archive.\n"
     strata.pointer.click(strata.dialog_button("Close"))
     strata.wait(lambda: strata.dialog() is None, "error dismissal")

@@ -560,3 +560,50 @@ fn password_retry_preserves_extract_here_and_extract_to_navigation_intent() {
         },
     );
 }
+
+#[test]
+fn deferred_focus_restore_does_not_steal_focus_from_an_open_modal() {
+    crate::test_support::gtk_test(
+        "ui::browser::events::tests::deferred_focus_restore_does_not_steal_focus_from_an_open_modal",
+        || {
+            let destination = tempfile::tempdir().expect("destination");
+            std::fs::write(destination.path().join("file.txt"), "x").expect("fixture");
+            let (view, browser, window, overlay) = archive_view(destination.path());
+            let state = &view.state;
+
+            let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let button = gtk::Button::with_label("Confirm");
+            content.append(&button);
+            let layer = crate::ui::modal::modal_layer(&content, &overlay, None, None);
+            overlay.add_overlay(&layer);
+            let layer_widget: gtk::Widget = layer.clone().upcast();
+            wait_until(
+                || {
+                    button.grab_focus();
+                    gtk::prelude::RootExt::focus(&window).is_some_and(|focused| {
+                        focused.is_ancestor(&layer) || focused == layer_widget
+                    })
+                },
+                "modal button did not take focus",
+            );
+
+            state.handle(&BrowserEvent::FocusChanged {
+                depth: 0,
+                position: Some(0),
+            });
+            state.handle(&BrowserEvent::SelectionSetChanged {
+                depth: 0,
+                positions: vec![0],
+                focused: 0,
+                take_focus: true,
+            });
+            assert!(
+                gtk::prelude::RootExt::focus(&window)
+                    .is_some_and(|focused| focused.is_ancestor(&layer) || focused == layer_widget),
+                "deferred focus restore stole focus from an open modal"
+            );
+            window.destroy();
+            browser.clear_observer();
+        },
+    );
+}

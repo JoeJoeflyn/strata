@@ -550,10 +550,11 @@ class Strata:
         self.wait(still, f"{node!r} to stop moving")
         return node
 
-    def editable_field(self) -> Node:
+    def editable_field(self, timeout: float = tree.DEFAULT_TIMEOUT) -> Node:
         return self.wait(
             lambda: self.window.find(role="text", states={"editable", "focused"}),
             "an editable field to take focus",
+            timeout=timeout,
         )
 
     def preview(self) -> Node | None:

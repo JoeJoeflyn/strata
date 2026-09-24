@@ -538,7 +538,12 @@ impl ViewState {
                         {
                             scroll_column_to(column, focused);
                         }
-                        if *take_focus && self.mode_views.borrow().mode() == BrowserMode::Columns {
+                        // A deferred selection/focus restore (e.g. an archive finishing behind a
+                        // dialog) must not pull focus out of an open modal.
+                        if *take_focus
+                            && self.mode_views.borrow().mode() == BrowserMode::Columns
+                            && !crate::ui::modal::has_modal_layer(&self.overlay)
+                        {
                             column.list.grab_focus();
                         }
                     }
@@ -562,10 +567,13 @@ impl ViewState {
                             scroll_column_to(&column, filtered_position);
                         }
                     }
+                    // A deferred selection/focus restore (e.g. an archive finishing behind a
+                    // dialog) must not pull focus out of an open modal.
                     if !editing
                         && self.mode_views.borrow().mode() == BrowserMode::Columns
                         && self.browser.active_depth() == Some(*depth)
                         && !self.suppress_scroll_after_drop.get()
+                        && !crate::ui::modal::has_modal_layer(&self.overlay)
                         && !column.list.grab_focus()
                     {
                         column.presentation.stack.grab_focus();

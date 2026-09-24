@@ -129,6 +129,7 @@ impl ViewState {
             14,
         )));
         cancel.set_tooltip_text(Some("Cancel"));
+        cancel.update_property(&[gtk::accessible::Property::Label("Cancel")]);
         cancel.set_valign(gtk::Align::Center);
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         head.append(&title);

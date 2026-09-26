@@ -219,6 +219,7 @@ Changing it refreshes active filters across windows and is saved for next launch
 In **Settings → General → Browsing**, **10xer mode** is off by default.
 Its subtitle is **Opinionated keyboard-centric mode with Yazi-style navigation. Disables some features. Toggle with Ctrl-Shift-M.**
 The footer shows **10X** at the right, immediately before the item count, while the mode is on.
+While the mode is on, that tag, the 10xer mode row, **Settings → Keybindings**, and the F1 / `~` reference are labeled **(experimental feature, under active development)**. The tag text stays **10X**. Those surfaces list only the commands that currently run.
 It hides window Search and pane Close/filter/refresh/sort chrome in
 interactive browsers and the portal file chooser (window Close and chooser
 Accept/Cancel stay; List column headings stay),

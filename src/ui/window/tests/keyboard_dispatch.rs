@@ -36,6 +36,7 @@ struct KeyboardFixture {
     sidebar: SidebarView,
     preview: PreviewDrawer,
     sidebar_toggle: gtk::ToggleButton,
+    shortcuts: ShortcutFooter,
     keys: gtk::EventControllerKey,
     _directory: tempfile::TempDir,
 }
@@ -89,7 +90,7 @@ impl KeyboardFixture {
                     view: view.clone(),
                     preferences,
                 },
-                shortcuts,
+                shortcuts: shortcuts.clone(),
             },
         );
         let controllers = window.observe_controllers();
@@ -118,6 +119,7 @@ impl KeyboardFixture {
             sidebar,
             preview,
             sidebar_toggle: toggle,
+            shortcuts: shortcuts.clone(),
             keys,
             _directory: directory,
         }
@@ -534,6 +536,131 @@ fn tenxer_file_list_skips_conflicting_defaults_and_keeps_bound_shortcuts() {
 }
 
 #[test]
+fn appearance_menu_hides_space_preview_while_tenxer_is_on() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::appearance_menu_hides_space_preview_while_tenxer_is_on",
+        || {
+            let preferences = PreferenceManager::shared();
+            preferences.set_tenxer_mode(false);
+            let view = browser_for_window();
+            let preview = PreviewDrawer::new(Rc::new(TextPreview), false);
+            let menu = build_appearance_menu(&view, &view.browser(), preferences.clone(), &preview);
+            let window = gtk::Window::builder().child(&menu).build();
+            window.present();
+            menu.popup();
+            wait_until(|| menu.popover().is_some_and(|popover| popover.is_visible()));
+            let popover = menu.popover().expect("appearance popover");
+            let toggle = widget_with_class(popover.upcast_ref(), "preview-panel-option")
+                .expect("preview panel option");
+            assert_eq!(preview_shortcut(&toggle), "Space");
+            assert_eq!(
+                toggle.tooltip_text().as_deref(),
+                Some("Toggle preview panel while browsing (Space)")
+            );
+            preferences.set_tenxer_mode(true);
+            assert_eq!(preview_shortcut(&toggle), "");
+            assert_eq!(
+                toggle.tooltip_text().as_deref(),
+                Some("Toggle preview panel while browsing")
+            );
+            preferences.set_tenxer_mode(false);
+            assert_eq!(preview_shortcut(&toggle), "Space");
+            window.destroy();
+        },
+    );
+}
+
+fn preview_shortcut(toggle: &gtk::Widget) -> String {
+    widget_with_class(toggle, "folder-context-shortcut")
+        .and_then(|widget| widget.downcast::<gtk::Label>().ok())
+        .filter(|label| label.is_visible())
+        .map(|label| label.text().to_string())
+        .unwrap_or_default()
+}
+
+#[test]
+fn hidden_shortcut_button_keeps_prompt_chord_and_feedback_usable() {
+    crate::test_support::gtk_test(
+        "ui::window::tests::keyboard_dispatch::hidden_shortcut_button_keeps_prompt_chord_and_feedback_usable",
+        || {
+            let fixture = KeyboardFixture::new();
+            let preferences = PreferenceManager::shared();
+            preferences.set_tenxer_mode(true);
+            preferences.set_show_keybinding_hints(false);
+            fixture.shortcuts.bind_preferences(&preferences);
+            pump(50);
+            let button = widget_with_class(fixture.window.upcast_ref(), "shortcut-footer-button")
+                .expect("shortcuts button");
+            assert!(!button.is_visible());
+            assert!(fixture.shortcuts.tag_visible());
+            fixture.shortcuts.show_prompt();
+            fixture.shortcuts.arm_chord("g-");
+            fixture.shortcuts.show_feedback("Copied");
+            assert!(gtk::prelude::WidgetExt::is_visible(
+                fixture.shortcuts.prompt()
+            ));
+            assert!(fixture.shortcuts.prompt().is_sensitive());
+            assert_eq!(fixture.shortcuts.chord().text(), "g-");
+            assert!(fixture.shortcuts.chord().is_visible());
+            fixture.shortcuts.prompt().set_text("keep");
+            assert!(fixture.shortcuts.prompt().grab_focus());
+            let names = directory_names(fixture._directory.path());
+            assert!(!fixture.press(Key::Delete, ModifierType::empty()));
+            assert_eq!(fixture.shortcuts.prompt().text(), "keep");
+            assert_eq!(directory_names(fixture._directory.path()), names);
+            assert!(fixture.press(Key::F1, ModifierType::empty()));
+            wait_until(|| {
+                widget_with_class(fixture.window.upcast_ref(), "shortcut-popover")
+                    .is_some_and(|popover| popover.is_visible())
+            });
+            assert_eq!(fixture.shortcuts.prompt().text(), "keep");
+            assert!(fixture.shortcuts.chord().is_visible());
+            assert_eq!(fixture.shortcuts.chord().text(), "g-");
+            fixture.press(Key::Escape, ModifierType::empty());
+            wait_until(|| {
+                widget_with_class(fixture.window.upcast_ref(), "shortcut-popover")
+                    .is_none_or(|popover| !popover.is_visible())
+            });
+            assert_eq!(fixture.shortcuts.prompt().text(), "keep");
+            assert!(fixture.shortcuts.prompt().grab_focus());
+            assert!(fixture.press(Key::Escape, ModifierType::empty()));
+            assert!(!gtk::prelude::WidgetExt::is_visible(
+                fixture.shortcuts.prompt()
+            ));
+            assert!(fixture.shortcuts.prompt().text().is_empty());
+            fixture.shortcuts.dismiss_feedback();
+            assert!(!widget_text_visible(
+                fixture.shortcuts.widget().upcast_ref(),
+                "Copied"
+            ));
+            assert!(fixture.shortcuts.chord().is_visible());
+            preferences.set_tenxer_mode(false);
+            pump(50);
+            assert!(!fixture.shortcuts.chord().is_visible());
+            assert!(fixture.shortcuts.chord().text().is_empty());
+            assert!(!fixture.shortcuts.tag_visible());
+        },
+    );
+}
+
+fn widget_text_visible(widget: &gtk::Widget, text: &str) -> bool {
+    if widget
+        .downcast_ref::<gtk::Label>()
+        .is_some_and(|label| label.is_visible() && label.text() == text)
+    {
+        return true;
+    }
+    let mut child = widget.first_child();
+    while let Some(current) = child {
+        if widget_text_visible(&current, text) {
+            return true;
+        }
+        child = current.next_sibling();
+    }
+    false
+}
+
+#[test]
 fn tenxer_entries_menus_and_reference_keep_their_keys() {
     crate::test_support::gtk_test(
         "ui::window::tests::keyboard_dispatch::tenxer_entries_menus_and_reference_keep_their_keys",
@@ -604,12 +731,13 @@ fn tenxer_entries_menus_and_reference_keep_their_keys() {
             assert!(preferences.tenxer_mode());
             assert_eq!(directory_names(fixture._directory.path()), names);
             assert_eq!(fixture.selected(), [0]);
-            if let Some(popover) =
-                widget_with_class(fixture.window.upcast_ref(), "shortcut-popover")
-                    .and_then(|widget| widget.downcast::<gtk::Popover>().ok())
-            {
-                popover.popdown();
-            }
+            fixture.press(Key::Delete, ModifierType::empty());
+            assert_eq!(
+                directory_names(fixture._directory.path()),
+                names,
+                "Delete must not remove files while the reference is open"
+            );
+            assert!(fixture.press(Key::asciitilde, ModifierType::empty()));
             wait_until(|| {
                 widget_with_class(fixture.window.upcast_ref(), "shortcut-popover")
                     .is_none_or(|popover| !popover.is_visible())

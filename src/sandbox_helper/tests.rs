@@ -219,13 +219,25 @@ fn create_test_jpeg_with_exif_thumbnail(
         gdk_pixbuf::Colorspace::Rgb,
         false,
         8,
-        thumb_width,
-        thumb_height,
+        if thumb_width > 1000 { 32 } else { thumb_width },
+        if thumb_height > 1000 {
+            24
+        } else {
+            thumb_height
+        },
     )
     .expect("allocate thumb source");
-    let thumb_jpeg = thumb
+    let mut thumb_jpeg = thumb
         .save_to_bufferv("jpeg", &[])
         .expect("encode thumb jpeg");
+    if thumb_width > 1000 || thumb_height > 1000 {
+        let sof0 = thumb_jpeg
+            .windows(2)
+            .position(|marker| marker == [0xff, 0xc0])
+            .expect("locate thumbnail SOF0");
+        thumb_jpeg[sof0 + 5..sof0 + 7].copy_from_slice(&(thumb_height as u16).to_be_bytes());
+        thumb_jpeg[sof0 + 7..sof0 + 9].copy_from_slice(&(thumb_width as u16).to_be_bytes());
+    }
 
     let primary_field = exif::Field {
         tag: exif::Tag::Orientation,
@@ -292,7 +304,6 @@ fn oversized_images_with_exif_thumbnail_render_thumbnail_and_preview() {
     let info = gdk_pixbuf::Pixbuf::file_info(&path).expect("read file info");
     assert_eq!((info.1, info.2), (18354, 23598));
 
-    // Thumbnail renders using EXIF thumbnail
     let thumb_png = render_raw(&path, 256).expect("render_raw with exif thumbnail");
     let thumb_pixbuf = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(thumb_png.clone()))
         .expect("decode thumbnail png");
@@ -301,20 +312,17 @@ fn oversized_images_with_exif_thumbnail_render_thumbnail_and_preview() {
     let direct_exif = read_exif_thumbnail(&path, 256).expect("read_exif_thumbnail directly");
     assert_eq!(direct_exif, thumb_png);
 
-    // Raw thumbnail renders using EXIF thumbnail
     let raw_thumb_png = render_raw_thumbnail(&path, 256).expect("render_raw_thumbnail with exif");
     let raw_pixbuf = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(raw_thumb_png))
         .expect("decode raw thumbnail png");
     assert_eq!((raw_pixbuf.width(), raw_pixbuf.height()), (32, 24));
 
-    // Preview renders using EXIF thumbnail
     let preview_png = super::document_media::image(&path, 800)
         .expect("document_media::image with exif thumbnail");
     let preview_pixbuf = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(preview_png))
         .expect("decode preview png");
     assert_eq!((preview_pixbuf.width(), preview_pixbuf.height()), (32, 24));
 
-    // CLI helper thumbnail-image renders to output
     let output = directory.path().join("thumb.png");
     run(&[
         "thumbnail-image".into(),
@@ -326,7 +334,6 @@ fn oversized_images_with_exif_thumbnail_render_thumbnail_and_preview() {
     .expect("thumbnail-image helper must succeed");
     assert!(output.exists());
 
-    // CLI helper preview-image renders to output
     let preview_output = directory.path().join("preview.png");
     run(&[
         "preview-image".into(),
@@ -338,7 +345,6 @@ fn oversized_images_with_exif_thumbnail_render_thumbnail_and_preview() {
     .expect("preview-image helper must succeed");
     assert!(preview_output.exists());
 
-    // Browser daemon operations Image and PreviewImage return thumbnail PNG
     let response = super::browser_render(&path, crate::sandbox::browser::wire::Operation::Image);
     assert!(!response.png.is_empty());
     assert!(!response.metadata.is_empty());
@@ -348,6 +354,19 @@ fn oversized_images_with_exif_thumbnail_render_thumbnail_and_preview() {
         crate::sandbox::browser::wire::Operation::PreviewImage,
     );
     assert!(!preview_response.png.is_empty());
+}
+
+#[test]
+fn oversized_embedded_jpeg_is_rejected_before_decoding() {
+    let directory = tempfile::tempdir().expect("image fixture");
+    let path = directory.path().join("oversized-embedded.jpg");
+    let jpeg = create_test_jpeg_with_exif_thumbnail(18354, 23598, 20000, 20000);
+    std::fs::write(&path, jpeg).expect("write oversized thumbnail fixture");
+
+    assert!(read_exif_thumbnail(&path, 256).is_none());
+    assert!(render_raw(&path, 256).is_err());
+    let response = super::browser_render(&path, crate::sandbox::browser::wire::Operation::Image);
+    assert!(response.png.is_empty());
 }
 
 #[test]
@@ -361,7 +380,6 @@ fn normal_images_with_exif_thumbnail_do_not_use_exif_thumbnail() {
     let info = gdk_pixbuf::Pixbuf::file_info(&path).expect("read file info");
     assert_eq!((info.1, info.2), (40, 40));
 
-    // Standard decode preserves full resolution (40x40), never using the 16x12 EXIF thumbnail
     let thumb_png = render_raw(&path, 256).expect("render_raw for normal image");
     let thumb_pixbuf = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(thumb_png))
         .expect("decode thumbnail png");

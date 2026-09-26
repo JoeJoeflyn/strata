@@ -565,6 +565,12 @@ fn render_simple_dcraw(path: &Path, size: i32) -> Result<Vec<u8>, String> {
 }
 
 fn scale_embedded_thumbnail(data: &[u8], size: i32) -> Result<Vec<u8>, String> {
+    let dimensions = read_jpeg_dimensions(&mut io::Cursor::new(data))
+        .or_else(|| read_png_dimensions(&mut io::Cursor::new(data)))
+        .or_else(|| read_gif_dimensions(&mut io::Cursor::new(data)));
+    if dimensions.is_some_and(|(width, height)| exceeds_decoded_frame_budget(width, height)) {
+        return Err("Embedded thumbnail exceeds the decoded frame budget".to_owned());
+    }
     scale_embedded_thumbnail_pixbuf(data, size).or_else(|_| render_imagemagick_bytes(data, size))
 }
 
@@ -602,27 +608,12 @@ fn scale_embedded_thumbnail_pixbuf(data: &[u8], size: i32) -> Result<Vec<u8>, St
 
 fn render_imagemagick_bytes(data: &[u8], size: i32) -> Result<Vec<u8>, String> {
     use std::io::Write;
-    for executable in ["magick", "convert"] {
-        let mut child = Command::new(executable)
-            .args(["-", "-auto-orient", "-thumbnail"])
-            .arg(format!("{size}x{size}>"))
-            .arg("png:-")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| error.to_string())?;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(data);
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|error| error.to_string())?;
-        if output.status.success() && !output.stdout.is_empty() {
-            return Ok(output.stdout);
-        }
+    if data.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err("Embedded thumbnail exceeds the input budget".to_owned());
     }
-    Err("No thumbnail renderer succeeded".to_owned())
+    let mut input = tempfile::NamedTempFile::new().map_err(|error| error.to_string())?;
+    input.write_all(data).map_err(|error| error.to_string())?;
+    render_imagemagick(input.path(), size)
 }
 
 fn render_pdf_thumbnail(path: &Path, size: i32) -> Result<Vec<u8>, String> {

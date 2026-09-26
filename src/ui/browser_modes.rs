@@ -845,6 +845,11 @@ impl ModeViews {
             .is_some_and(|pane| pane.search.focus_result(path))
     }
 
+    pub fn select_search_result(&self, path: &std::path::Path) -> bool {
+        self.single_pane()
+            .is_some_and(|pane| pane.search.select_result(path))
+    }
+
     pub fn select_all_search_results(&self) -> bool {
         self.single_pane()
             .is_some_and(|pane| pane.search.select_all())
@@ -1736,6 +1741,9 @@ pub(crate) fn filter_controls(tooltip: &str) -> (gtk::Entry, gtk::Revealer, gtk:
     let shown_filter = revealer.clone();
     let focused_filter = entry.clone();
     button.connect_toggled(move |button| {
+        if crate::ui::tenxer_mode::chrome_suppressed() {
+            return;
+        }
         shown_filter.set_reveal_child(button.is_active());
         if button.is_active() {
             focused_filter.grab_focus();
@@ -1743,6 +1751,7 @@ pub(crate) fn filter_controls(tooltip: &str) -> (gtk::Entry, gtk::Revealer, gtk:
             focused_filter.set_text("");
         }
     });
+    crate::ui::tenxer_mode::hide_filter_while_enabled(&button, &revealer);
     (entry, revealer, button)
 }
 

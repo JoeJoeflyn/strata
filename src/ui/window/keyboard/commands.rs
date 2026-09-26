@@ -22,6 +22,14 @@ use crate::{
     },
 };
 
+fn entry_for(widget: &gtk::Widget) -> Option<gtk::Entry> {
+    widget.clone().downcast().ok().or_else(|| {
+        widget
+            .ancestor(gtk::Entry::static_type())
+            .and_then(|entry| entry.downcast().ok())
+    })
+}
+
 impl Dispatcher {
     pub(super) fn window_commands(&self, event: &KeyEvent) -> KeyResult {
         if event.control()
@@ -136,6 +144,9 @@ impl Dispatcher {
     pub(super) fn sidebar_commands(&self, browser: &Browser, event: &KeyEvent) -> KeyResult {
         let toggle = self.top_bar.sidebar_toggle();
         if is_sidebar_focus_shortcut(event.key, event.modifiers) {
+            if self.type_to_search.preferences.tenxer_mode() {
+                return Some(Propagation::Stop);
+            }
             self.view.keyboard_navigation();
             if self.sidebar.contains(&event.focused) {
                 self.sidebar.restore(browser, false);
@@ -162,6 +173,15 @@ impl Dispatcher {
         if self.view.location_has_focus() {
             if event.key == Key::Escape {
                 self.view.cancel_location_edit();
+                return Some(Propagation::Stop);
+            }
+            if event.control()
+                && event
+                    .without(Modifiers::SHIFT_MASK | Modifiers::ALT_MASK | Modifiers::SUPER_MASK)
+                && event.key == Key::a
+                && let Some(entry) = event.focused.as_ref().and_then(entry_for)
+            {
+                entry.select_region(0, -1);
                 return Some(Propagation::Stop);
             }
             return Some(Propagation::Proceed);

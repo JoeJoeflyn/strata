@@ -1305,6 +1305,11 @@ impl BrowserView {
         self.state.columns_mirror_selection.set(enabled);
     }
 
+    #[cfg(test)]
+    pub(in crate::ui) fn columns_mirror_selection_enabled(&self) -> bool {
+        self.state.columns_mirror_selection.get()
+    }
+
     pub fn set_click_activation(&self, mode: BrowserMode, activation: ClickActivation) {
         if mode == BrowserMode::Columns {
             self.state.columns_click_activation.set(activation);
@@ -1636,6 +1641,9 @@ impl BrowserView {
     }
 
     fn show_filter_with_optional_query(&self, query: Option<&str>) -> bool {
+        if crate::ui::tenxer_mode::chrome_suppressed() {
+            return false;
+        }
         if self.view_mode() != BrowserMode::Columns {
             return self.state.mode_views.borrow().show_filter_with_query(query);
         }

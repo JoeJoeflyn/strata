@@ -2830,9 +2830,39 @@ entry.preview-command-entry selection {
   font-size: 0.85em;
 }
 
-.shortcut-footer-count {
+.shortcut-footer-count,
+.tenxer-tag,
+.tenxer-experimental,
+.shortcut-footer-chord,
+.shortcut-footer-feedback {
   color: @theme_text;
   font-weight: normal;
+}
+
+.shortcut-footer-prompt {
+  color: @theme_text;
+  background: @theme_surface;
+  border: 1px solid @theme_border;
+  border-radius: 4px;
+  min-height: 20px;
+  padding: 0 6px;
+}
+
+.shortcut-footer-prompt:hover {
+  border-color: @theme_accent;
+}
+
+.shortcut-footer-prompt:focus,
+.shortcut-footer-prompt:focus-visible {
+  outline: 2px solid @theme_accent;
+  outline-offset: -2px;
+  border-color: @theme_accent;
+}
+
+.shortcut-footer-prompt:disabled {
+  color: @theme_dim_text;
+  background: @theme_bg;
+  border-color: @theme_border;
 }
 
 .shortcut-footer-paste {
@@ -2845,8 +2875,7 @@ entry.preview-command-entry selection {
   font-weight: bold;
 }
 
-.shortcut-footer-button > button,
-.shortcut-reference-close {
+.shortcut-footer-button > button {
   background: transparent;
   color: @theme_text;
   border: 1px solid transparent;
@@ -2857,29 +2886,25 @@ entry.preview-command-entry selection {
   padding: 0 6px;
 }
 
-.shortcut-footer-button > button:hover,
-.shortcut-reference-close:hover {
+.shortcut-footer-button > button:hover {
   background: @theme_highlight;
   color: @theme_text;
   border-color: @theme_border;
 }
 
 .shortcut-footer-button > button:active,
-.shortcut-footer-button > button:checked,
-.shortcut-reference-close:active {
+.shortcut-footer-button > button:checked {
   background: @theme_highlight;
   color: @theme_text;
   border-color: @theme_accent;
 }
 
-.shortcut-footer-button > button:focus-visible,
-.shortcut-reference-close:focus-visible {
+.shortcut-footer-button > button:focus-visible {
   outline: 2px solid @theme_accent;
   outline-offset: -2px;
 }
 
-.shortcut-footer-button > button:disabled,
-.shortcut-reference-close:disabled {
+.shortcut-footer-button > button:disabled {
   color: @theme_dim_text;
   background: @theme_surface;
 }
@@ -2918,6 +2943,7 @@ entry.preview-command-entry selection {
   font-size: 0.9em;
 }
 
+.shortcut-popover scrolledwindow:focus,
 .shortcut-popover scrolledwindow:focus-visible {
   outline: 2px solid @theme_accent;
   outline-offset: -2px;

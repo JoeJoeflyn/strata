@@ -126,6 +126,48 @@ def test_open_with_launches_without_changing_default(open_with_app, strata, targ
     strata.wait(lambda: strata.dialog() is None, "the chooser to close")
 
 
+def test_open_with_always_use_updates_the_default(chooser_apps, strata):
+    output, associations, _ = chooser_apps
+    strata.open_context_menu("todo.txt")
+    strata.wait(lambda: "sensitive" in strata.menu_item("Open With…").states, "MIME lookup")
+    strata.choose_menu_item("Open With…")
+    dialog = strata.wait_for_dialog()
+    strata.keyboard.type_text("Alternative")
+    strata.keyboard.press("Tab")
+    strata.wait(lambda: strata.focused_node().name == "Alternative Viewer", "row focus")
+    strata.keyboard.press("Tab")
+    strata.wait(
+        lambda: strata.focused_node().name == "Always use for this file type",
+        "default toggle focus",
+    )
+    strata.keyboard.press("space")
+    strata.wait(
+        lambda: "checked"
+        in dialog.find(role="check box", name="Always use for this file type").states,
+        "the default toggle to check",
+    )
+    strata.keyboard.press("Tab")
+    strata.keyboard.press("Tab")
+    strata.wait(lambda: strata.focused_node().name == "Open", "Open focus")
+    strata.keyboard.press("Return")
+    strata.wait(
+        lambda: output.exists() and output.read_text(),
+        "the selected application to receive the file",
+    )
+    received = output.read_text().splitlines()
+    assert len(received) == 1
+    content_type = (
+        Gio.File.new_for_path(str(strata.fixture.path("todo.txt")))
+        .query_info("standard::content-type", Gio.FileQueryInfoFlags.NONE, None)
+        .get_content_type()
+    )
+    strata.wait(
+        lambda: f"{content_type}=strata-alternative.desktop" in associations.read_text(),
+        "the chooser to record the new default",
+    )
+    strata.wait(lambda: strata.dialog() is None, "the chooser to close")
+
+
 def test_open_with_launch_failure_shows_an_error(open_with_app, strata):
     output, associations, contents = open_with_app
     strata.open_context_menu("todo.txt")
@@ -206,9 +248,20 @@ def test_open_with_names_rows_and_tabs_out_of_the_list(chooser_apps, strata):
     strata.keyboard.press("Tab")
     strata.wait(lambda: strata.focused_node().name == "Alternative Viewer", "Tab into list")
     strata.keyboard.press("Tab")
-    strata.wait(lambda: strata.focused_node().name == "Cancel", "Tab to leave the list")
+    strata.wait(
+        lambda: strata.focused_node().name == "Always use for this file type",
+        "Tab to the default toggle",
+    )
+    strata.keyboard.press("Tab")
+    strata.wait(lambda: strata.focused_node().name == "Cancel", "Tab to leave the toggle")
+    strata.keyboard.press("shift+Tab")
+    strata.wait(
+        lambda: strata.focused_node().name == "Always use for this file type",
+        "Shift+Tab returns to the toggle",
+    )
     strata.keyboard.press("shift+Tab")
     strata.wait(lambda: strata.focused_node().name == "Alternative Viewer", "selected row focus")
+    strata.keyboard.press("Tab")
     strata.keyboard.press("Tab")
     strata.keyboard.press("Tab")
     strata.wait(lambda: strata.focused_node().name == "Open", "Tab to reach Open")

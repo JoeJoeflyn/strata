@@ -203,7 +203,8 @@ fn install_list_tab_navigation(
                 false
             }
         };
-        let focus_always = || always.grab_focus();
+        // A hidden widget still accepts focus grabs, so gate on visibility like the list.
+        let focus_always = || always.is_visible() && always.grab_focus();
         let moved = if focus == search || focus.is_ancestor(&search) {
             if backward {
                 close.grab_focus()
@@ -370,7 +371,11 @@ pub(super) fn show(
     list.set_activate_on_single_click(false);
     list.update_property(&[gtk::accessible::Property::Label("Applications")]);
 
-    let always_use = super::controls::form_check_button("Always use for this file type");
+    let always_use = super::controls::form_check_button(if content_types.len() > 1 {
+        "Always use for these file types"
+    } else {
+        "Always use for this file type"
+    });
     always_use.set_visible(false);
     layout.actions.prepend(&always_use);
 

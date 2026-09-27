@@ -115,6 +115,15 @@ def test_activation_without_selectable_application_shows_specific_empty_state(
     )
     assert "sensitive" not in strata.dialog_button("Open").states
 
+    # The hidden "Always use" toggle must stay out of the focus cycle.
+    for chord in ["shift+Tab", "Tab"]:
+        strata.keyboard.press(chord)
+        strata.wait(
+            lambda: strata.focused_node() is not None
+            and "visible" in strata.focused_node().states,
+            f"{chord} to keep focus on a visible control",
+        )
+
     strata.keyboard.press("Escape")
     strata.wait(lambda: strata.dialog() is None, "the empty chooser to close")
     strata.wait_for_focused_entry("todo.txt")
@@ -170,14 +179,18 @@ def test_open_with_always_use_updates_the_default(chooser_apps, strata, target):
     strata.keyboard.press("Tab")
     strata.wait(lambda: strata.focused_node().name == "Alternative Viewer", "row focus")
     strata.keyboard.press("Tab")
+    label = (
+        "Always use for these file types"
+        if target == "mixed"
+        else "Always use for this file type"
+    )
     strata.wait(
-        lambda: strata.focused_node().name == "Always use for this file type",
+        lambda: strata.focused_node().name == label,
         "default toggle focus",
     )
     strata.keyboard.press("space")
     strata.wait(
-        lambda: "checked"
-        in dialog.find(role="check box", name="Always use for this file type").states,
+        lambda: "checked" in dialog.find(role="check box", name=label).states,
         "the default toggle to check",
     )
     strata.keyboard.press("Tab")

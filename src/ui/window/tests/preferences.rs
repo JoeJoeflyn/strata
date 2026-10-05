@@ -618,6 +618,8 @@ fn browsing_preferences_stay_saved_but_unused_until_exit() {
                     .any(|button| button.is_active()),
                 "type to search filters again after leaving 10xer"
             );
+            manager.set_list_expandable_folders(false);
+            manager.set_arrow_navigation_scoped(false);
             drop(directory);
         },
     );
@@ -806,6 +808,7 @@ fn saved_list_expandable_folders_restores_and_updates_across_windows() {
             let saved = std::fs::read_to_string(settings_file()).expect("saved settings");
             assert!(saved.contains("list_expandable_folders = true"), "{saved}");
 
+            manager.set_list_expandable_folders(false);
             drop(directory);
         },
     );

@@ -23,6 +23,7 @@ mod go_prompt;
 mod mode_exit;
 mod place_chords;
 mod preview_ownership;
+mod tree_view;
 mod video_clips;
 
 use crate::ui::{

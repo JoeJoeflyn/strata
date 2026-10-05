@@ -1030,6 +1030,7 @@ fn browser_mode_icon(mode: BrowserMode) -> &'static str {
         BrowserMode::Columns => crate::assets::icons::COLUMNS,
         BrowserMode::Icons => crate::assets::icons::ICONS,
         BrowserMode::List => crate::assets::icons::LIST,
+        BrowserMode::Tree => crate::assets::icons::TREE,
     }
 }
 

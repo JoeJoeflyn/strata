@@ -123,7 +123,7 @@ enum PeekOriginBounds {
 fn peek_origin_bounds(mode: BrowserMode) -> PeekOriginBounds {
     match mode {
         BrowserMode::Columns => PeekOriginBounds::Column,
-        BrowserMode::Icons | BrowserMode::List => PeekOriginBounds::Anchor,
+        BrowserMode::Icons | BrowserMode::List | BrowserMode::Tree => PeekOriginBounds::Anchor,
     }
 }
 

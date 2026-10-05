@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 
+use std::rc::Rc;
+
 use gtk::{gio, prelude::*};
 
 use super::{
     BrowserMode, ModeViews, Pane, pane_holds_keyboard_focus, reconnect_pane_model, replace_entries,
-    set_selections, show_count, update_bound_icons_metadata, update_bound_list_metadata,
+    set_selections, show_count, tree, update_bound_icons_metadata, update_bound_list_metadata,
 };
 use crate::{
     app::{Browser, BrowserEvent, EntryInsertion, EntrySplice},
@@ -39,9 +41,16 @@ impl ModeViews {
             BrowserEvent::Reset => {
                 self.clear_icons();
                 self.clear_list();
+                self.clear_tree();
             }
             BrowserEvent::ColumnsTruncated { .. } => self.rebuild_active_mode(),
             BrowserEvent::ColumnsRelocated { from_depth } => {
+                if self.is_tree_active() {
+                    if *from_depth == 0 {
+                        self.rebuild_tree();
+                    }
+                    return true;
+                }
                 if let Some(depth) = self
                     .browser
                     .active_depth()
@@ -72,12 +81,25 @@ impl ModeViews {
             BrowserMode::Columns => {}
             BrowserMode::Icons => self.rebuild_icons(),
             BrowserMode::List => self.rebuild_list(),
+            BrowserMode::Tree => self.rebuild_tree(),
         }
     }
 
     fn handle_rows_event(&self, event: &BrowserEvent, defer_empty: bool) -> bool {
         match event {
             BrowserEvent::EntriesInserted { depth, insertions } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    for insertion in insertions {
+                        tree.insert_root(
+                            insertion.position,
+                            insertion
+                                .entries
+                                .iter()
+                                .map(|entry| Rc::new(entry.clone()))
+                                .collect(),
+                        );
+                    }
+                }
                 let camera = self
                     .browser
                     .location_at(*depth)
@@ -104,6 +126,9 @@ impl ModeViews {
                 });
             }
             BrowserEvent::EntriesReplaced { depth, count } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    tree.replace_root_from_browser(&self.browser, *count);
+                }
                 self.update_panes(*depth, |pane| {
                     pane.replace_rows(&self.browser, *count, defer_empty)
                 });
@@ -113,11 +138,40 @@ impl ModeViews {
                 position,
                 count,
             } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    let entries = self
+                        .browser
+                        .with_entries(
+                            *depth,
+                            *position..position.saturating_add(*count),
+                            |entries| {
+                                entries
+                                    .iter()
+                                    .map(|entry| Rc::new(entry.clone()))
+                                    .collect::<Vec<_>>()
+                            },
+                        )
+                        .unwrap_or_default();
+                    tree.insert_root(*position, entries);
+                }
                 self.update_panes(*depth, |pane| {
                     pane.publish_rows(&self.browser, *position, *count)
                 });
             }
             BrowserEvent::EntriesSpliced { depth, splices, .. } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    for splice in splices {
+                        tree.splice_root(
+                            splice.position,
+                            splice.removed,
+                            splice
+                                .entries
+                                .iter()
+                                .map(|entry| Rc::new(entry.clone()))
+                                .collect(),
+                        );
+                    }
+                }
                 let restore_cursor = self
                     .panes_at(*depth)
                     .iter()
@@ -163,6 +217,9 @@ impl ModeViews {
                 }
             }
             BrowserEvent::MetadataFilled { depth, updates } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    tree.apply_metadata(updates);
+                }
                 if self.mode == BrowserMode::List {
                     self.update_panes(*depth, |pane| update_bound_list_metadata(pane, updates));
                 } else if self.mode == BrowserMode::Icons {
@@ -214,10 +271,27 @@ impl ModeViews {
                 self.update_panes(*depth, Pane::start_sorting)
             }
             BrowserEvent::SortingFinished { depth } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    tree.resort_branches();
+                }
                 self.update_panes(*depth, Pane::finish_sorting)
             }
-            BrowserEvent::ColumnReloaded { depth } => self.update_panes(*depth, Pane::reload_rows),
+            BrowserEvent::ColumnReloaded { depth } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    let count = self
+                        .browser
+                        .column_snapshot(*depth)
+                        .map(|snapshot| snapshot.count)
+                        .unwrap_or_default();
+                    tree.replace_root_from_browser(&self.browser, count);
+                    tree.resort_branches();
+                }
+                self.update_panes(*depth, Pane::reload_rows)
+            }
             BrowserEvent::LoadFinished { depth, truncated } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    tree.update_status();
+                }
                 let restore_cursor = self
                     .panes_at(*depth)
                     .iter()
@@ -238,6 +312,9 @@ impl ModeViews {
                 }
             }
             BrowserEvent::LoadFailed { depth, message } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    tree.load_failed(message);
+                }
                 self.update_panes(*depth, |pane| pane.fail_loading(message));
                 if self
                     .list_pane
@@ -293,9 +370,21 @@ impl ModeViews {
                 take_focus,
                 ..
             } => {
+                if let Some(tree) = self.tree_for_depth(*depth) {
+                    tree.sync_root_selection(positions);
+                    if *take_focus && !positions.is_empty() {
+                        tree.focus_source_row(positions[0]);
+                    }
+                }
                 self.update_selection(*depth, positions, *take_focus);
             }
             BrowserEvent::FocusChanged { depth, .. } => {
+                if let Some(tree) = self.tree_for_depth(*depth)
+                    && !self.cursor_keeps_focus.get()
+                    && let Some((_, position, _)) = self.browser.focused_item()
+                {
+                    tree.focus_source_row(position);
+                }
                 let positions = self.browser.selected_positions(*depth);
                 self.update_panes(*depth, |pane| set_selections(pane, &positions));
                 if !self.cursor_keeps_focus.get() {
@@ -307,6 +396,9 @@ impl ModeViews {
     }
 
     pub(crate) fn show_empty_if_empty(&self, depth: usize) {
+        if let Some(tree) = self.tree_for_depth(depth) {
+            tree.update_status();
+        }
         self.update_panes(depth, |pane| {
             let showing_error = pane.stack.visible_child_name().as_deref() == Some("status")
                 && pane.status.has_css_class("error");
@@ -335,6 +427,20 @@ impl ModeViews {
 
     fn update_panes(&self, depth: usize, update: impl FnMut(&Pane)) {
         self.panes_at(depth).into_iter().for_each(update);
+    }
+
+    /// The tree pane when it mirrors this depth. The tree root always tracks
+    /// depth 0; nested branches load outside the column model.
+    fn tree_for_depth(&self, depth: usize) -> Option<tree::TreePane> {
+        (self.is_tree_active() && depth == 0)
+            .then(|| self.tree_pane.clone())
+            .flatten()
+    }
+
+    fn clear_tree(&self) {
+        if let Some(tree) = self.tree_pane.as_ref() {
+            tree.set_root(None, Vec::new());
+        }
     }
 }
 

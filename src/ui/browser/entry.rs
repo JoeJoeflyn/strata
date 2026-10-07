@@ -279,13 +279,12 @@ pub(in crate::ui) fn icon_for_name(name: &str) -> &'static str {
         Some("html" | "htm" | "xhtml" | "mjml") => crate::assets::icons::LANG_HTML,
         Some("css" | "scss" | "less" | "sass") => crate::assets::icons::LANG_CSS,
         Some(
-            "xml" | "xsd" | "dtd" | "rng" | "xsl" | "xslt" | "wsdl" | "xaml" | "resx"
-            | "xcscheme" | "storyboard" | "xib" | "plist" | "entitlements" | "rss" | "atom"
-            | "mml",
+            "xml" | "xsd" | "dtd" | "rng" | "xsl" | "xslt" | "wsdl" | "xaml" | "resx" | "xcscheme"
+            | "storyboard" | "xib" | "plist" | "entitlements" | "rss" | "atom" | "mml",
         ) => crate::assets::icons::GLOBE,
         Some(
-            "twig" | "ejs" | "hbs" | "handlebars" | "mustache" | "pug" | "jade" | "haml"
-            | "slim" | "smarty" | "tpl",
+            "twig" | "ejs" | "hbs" | "handlebars" | "mustache" | "pug" | "jade" | "haml" | "slim"
+            | "smarty" | "tpl",
         ) => crate::assets::icons::LANG_HTML,
         Some("zip" | "7z" | "tar" | "gz" | "tgz" | "bz2" | "xz" | "zst" | "rar") => {
             crate::assets::icons::FILE_ARCHIVE
@@ -299,9 +298,9 @@ pub(in crate::ui) fn icon_for_name(name: &str) -> &'static str {
             crate::assets::icons::KEY_ROUND
         }
         Some(
-            "yaml" | "yml" | "toml" | "ini" | "conf" | "cfg" | "config" | "env" | "lock"
-            | "cmake" | "mk" | "mak" | "ninja" | "m4" | "am" | "ac" | "gyp" | "gypi" | "bazel"
-            | "bzl" | "pbxproj" | "xcconfig" | "pro" | "pri",
+            "yaml" | "yml" | "toml" | "ini" | "conf" | "cfg" | "config" | "env" | "lock" | "cmake"
+            | "mk" | "mak" | "ninja" | "m4" | "am" | "ac" | "gyp" | "gypi" | "bazel" | "bzl"
+            | "pbxproj" | "xcconfig" | "pro" | "pri",
         ) => crate::assets::icons::COG,
         Some(
             "json" | "jsonc" | "json5" | "jsonl" | "ndjson" | "proto" | "thrift" | "avsc" | "avdl",
@@ -327,9 +326,9 @@ pub(in crate::ui) fn icon_for_name(name: &str) -> &'static str {
         Some("scala" | "sbt") => crate::assets::icons::LANG_SCALA,
         Some("hs" | "lhs" | "hsc" | "cabal") => crate::assets::icons::LANG_HASKELL,
         Some("lua" | "fnl" | "tl") => crate::assets::icons::LANG_LUA,
-        Some("cs" | "csproj" | "sln" | "vb" | "razor" | "cshtml" | "props" | "targets" | "nuspec") => {
-            crate::assets::icons::LANG_CSHARP
-        }
+        Some(
+            "cs" | "csproj" | "sln" | "vb" | "razor" | "cshtml" | "props" | "targets" | "nuspec",
+        ) => crate::assets::icons::LANG_CSHARP,
         Some("fs" | "fsx" | "fsi") => crate::assets::icons::LANG_FSHARP,
         Some("r" | "rmd" | "rproj") => crate::assets::icons::LANG_R,
         Some("jl") => crate::assets::icons::LANG_JULIA,
@@ -350,15 +349,11 @@ pub(in crate::ui) fn icon_for_name(name: &str) -> &'static str {
         }
         Some("php" | "phtml" | "ctp") => crate::assets::icons::LANG_PHP,
         Some("pl" | "pm" | "pod") => crate::assets::icons::LANG_PERL,
-        Some("ml" | "mli" | "mll" | "mly" | "opam" | "dune") => {
-            crate::assets::icons::LANG_OCAML
-        }
+        Some("ml" | "mli" | "mll" | "mly" | "opam" | "dune") => crate::assets::icons::LANG_OCAML,
         Some("re" | "res" | "resi") => crate::assets::icons::LANG_OCAML,
         Some("clj" | "cljs" | "cljc" | "edn" | "bb") => crate::assets::icons::LANG_CLOJURE,
         Some("groovy" | "gvy" | "gradle") => crate::assets::icons::LANG_GROOVY,
-        Some("tf" | "tfvars" | "hcl" | "tofu" | "nomad") => {
-            crate::assets::icons::LANG_TERRAFORM
-        }
+        Some("tf" | "tfvars" | "hcl" | "tofu" | "nomad") => crate::assets::icons::LANG_TERRAFORM,
         Some("graphql" | "gql" | "gqls") => crate::assets::icons::LANG_GRAPHQL,
         Some("nim" | "nims" | "nimble" | "nimcfg") => crate::assets::icons::LANG_NIM,
         Some("cr" | "ecr") => crate::assets::icons::LANG_CRYSTAL,
@@ -367,18 +362,17 @@ pub(in crate::ui) fn icon_for_name(name: &str) -> &'static str {
         Some("nix") => crate::assets::icons::LANG_NIXOS,
         Some("ipynb") => crate::assets::icons::LANG_JUPYTER,
         Some("sol") => crate::assets::icons::LANG_SOLIDITY,
-        Some("asm" | "s" | "nasm" | "sv" | "svh" | "vhdl") => {
-            crate::assets::icons::FILE_CODE
-        }
+        Some("asm" | "s" | "nasm" | "sv" | "svh" | "vhdl") => crate::assets::icons::FILE_CODE,
         Some(
-            "m" | "v" | "mm" | "tcl" | "tk" | "exp" | "awk" | "sed" | "el" | "elc" | "lisp"
-            | "lsp" | "asd" | "scm" | "ss" | "pas" | "pp" | "lpr" | "dpr" | "adb" | "ads"
-            | "ada" | "f" | "for" | "f90" | "f95" | "cob" | "cbl" | "bas" | "purs" | "idr"
-            | "lidr" | "agda" | "lean" | "rego",
+            "m" | "v" | "mm" | "tcl" | "tk" | "exp" | "awk" | "sed" | "el" | "elc" | "lisp" | "lsp"
+            | "asd" | "scm" | "ss" | "pas" | "pp" | "lpr" | "dpr" | "adb" | "ads" | "ada" | "f"
+            | "for" | "f90" | "f95" | "cob" | "cbl" | "bas" | "purs" | "idr" | "lidr" | "agda"
+            | "lean" | "rego",
         ) => crate::assets::icons::FILE_CODE,
-        Some("sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "ps1" | "psm1" | "psd1" | "bat" | "cmd" | "nu" | "elv") => {
-            crate::assets::icons::FILE_TERMINAL
-        }
+        Some(
+            "sh" | "bash" | "zsh" | "fish" | "ksh" | "csh" | "ps1" | "psm1" | "psd1" | "bat"
+            | "cmd" | "nu" | "elv",
+        ) => crate::assets::icons::FILE_TERMINAL,
         Some("ppt" | "pptx" | "pps" | "ppsx" | "odp") => icons::PRESENTATION,
         Some("ttf" | "otf" | "woff" | "woff2" | "eot" | "ttc" | "otc") => icons::FILE_TYPE,
         _ => icons::DOCUMENTS,

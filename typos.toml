@@ -29,6 +29,6 @@ darcula = "darcula"
 Strata = "Strata"
 WRONLY = "WRONLY"
 gir = "gir"
-# File extensions matched verbatim by the icon resolver.
+# Verbatim file extensions.
 mak = "mak"
 edn = "edn"

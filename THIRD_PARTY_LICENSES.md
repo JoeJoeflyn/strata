@@ -54,6 +54,10 @@ Only the glyph outlines are used. Each SVG was rewritten to a single path filled
 
 Only the glyph outlines are used. Each SVG was rewritten to a single path filled with Strata's symbolic foreground placeholder so the existing recolor pipeline tints it with the theme accent; no brand colors are bundled.
 
+## Java file glyph
+
+`data/icons/scalable/actions/strata-lang-java.svg` is a custom stroked coffee glyph contributed under Strata's [MIT license](LICENSE), not a Simple Icons or Devicons asset. Its stroke uses the symbolic foreground placeholder for live theme recoloring.
+
 ## Tinted Theming schemes
 
 - Project: <https://github.com/tinted-theming/schemes>

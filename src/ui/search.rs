@@ -761,15 +761,15 @@ fn refresh_visible_thumbnails(state: &SearchState) {
             else {
                 continue;
             };
+            let fallback = if item.is_directory {
+                crate::assets::icons::FOLDER
+            } else {
+                crate::ui::browser::icon_for_name(&item.name)
+            };
             if visible && requested.insert(item.path.clone()) {
-                let fallback = if item.is_directory {
-                    crate::assets::icons::FOLDER
-                } else {
-                    crate::ui::browser::icon_for_name(&item.name)
-                };
                 changes.push((image, Some(item.path.clone()), fallback));
             } else if !visible && requested.remove(&item.path) {
-                changes.push((image, None, crate::assets::icons::DOCUMENTS));
+                changes.push((image, None, fallback));
             }
         }
         changes

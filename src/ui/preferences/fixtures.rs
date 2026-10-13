@@ -117,6 +117,14 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
             kind: 90,
             modified: 130,
         }),
+        list_column_order: vec![
+            ListColumnId::Name,
+            ListColumnId::Size,
+            ListColumnId::Type,
+            ListColumnId::Modified,
+            ListColumnId::Mode,
+        ],
+        list_hidden_columns: vec![ListColumnId::Mode],
     }
 }
 

@@ -1181,6 +1181,8 @@ fn all_preference_setters_publish_and_persist_without_duplicate_notifications() 
                 |m| m.set_chooser_list_columns(None),
                 |m| m.set_browser_column_width(Some(400)),
                 |m| m.set_browser_list_columns(None),
+                |m| m.set_list_column_order(default_list_column_order()),
+                |m| m.set_list_hidden_columns(Vec::new()),
                 |m| m.set_cross_volume_drop_strategy(CrossVolumeDropStrategy::Copy),
                 |m| m.set_date_format(crate::util::DateFormat::Long),
                 |m| m.set_default_directory(None),
@@ -1614,6 +1616,85 @@ fn item_customizations_follow_relocations_and_removals() {
                     );
                 }
             }
+        },
+    );
+}
+
+#[test]
+fn list_columns_order_and_visibility_persist_and_update() {
+    gtk_test(
+        "ui::preferences::tests::preferences::list_columns_order_and_visibility_persist_and_update",
+        || {
+            let manager = PreferenceManager::shared();
+
+            // Default order and visibility
+            assert_eq!(
+                manager.list_column_order(),
+                vec![
+                    ListColumnId::Name,
+                    ListColumnId::Mode,
+                    ListColumnId::Size,
+                    ListColumnId::Type,
+                    ListColumnId::Modified,
+                ]
+            );
+            assert!(manager.list_hidden_columns().is_empty());
+            assert!(manager.is_list_column_visible(ListColumnId::Mode));
+
+            // Hide Mode and Type
+            manager.set_list_column_visible(ListColumnId::Mode, false);
+            manager.set_list_column_visible(ListColumnId::Type, false);
+            assert!(!manager.is_list_column_visible(ListColumnId::Mode));
+            assert!(!manager.is_list_column_visible(ListColumnId::Type));
+            assert!(manager.is_list_column_visible(ListColumnId::Name));
+            assert!(manager.is_list_column_visible(ListColumnId::Size));
+            assert_eq!(
+                manager.list_visible_columns(),
+                vec![
+                    ListColumnId::Name,
+                    ListColumnId::Size,
+                    ListColumnId::Modified,
+                ]
+            );
+
+            // Name cannot be hidden
+            manager.set_list_column_visible(ListColumnId::Name, false);
+            assert!(manager.is_list_column_visible(ListColumnId::Name));
+
+            // Move Modified to the left
+            manager.move_list_column(ListColumnId::Modified, -1);
+            assert_eq!(
+                manager.list_column_order(),
+                vec![
+                    ListColumnId::Name,
+                    ListColumnId::Mode,
+                    ListColumnId::Size,
+                    ListColumnId::Modified,
+                    ListColumnId::Type,
+                ]
+            );
+
+            // Verify persistence
+            let saved = read_preferences().expect("saved preferences");
+            assert_eq!(saved.list_column_order, manager.list_column_order());
+            assert_eq!(saved.list_hidden_columns, manager.list_hidden_columns());
+
+            // Reset columns
+            manager.reset_list_columns();
+            assert_eq!(
+                manager.list_column_order(),
+                vec![
+                    ListColumnId::Name,
+                    ListColumnId::Mode,
+                    ListColumnId::Size,
+                    ListColumnId::Type,
+                    ListColumnId::Modified,
+                ]
+            );
+            assert!(manager.list_hidden_columns().is_empty());
+            let saved_reset = read_preferences().expect("saved preferences");
+            assert_eq!(saved_reset.list_column_order, manager.list_column_order());
+            assert!(saved_reset.list_hidden_columns.is_empty());
         },
     );
 }

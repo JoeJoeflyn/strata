@@ -309,6 +309,16 @@ pub(crate) fn sanitize_list_hidden_columns(hidden: &[ListColumnId]) -> Vec<ListC
     sanitized
 }
 
+pub(crate) fn list_column_for_sort(sort_key: SortKey) -> Option<ListColumnId> {
+    match sort_key {
+        SortKey::Name => Some(ListColumnId::Name),
+        SortKey::Size => Some(ListColumnId::Size),
+        SortKey::Type => Some(ListColumnId::Type),
+        SortKey::Modified => Some(ListColumnId::Modified),
+        SortKey::DeviceOrder | SortKey::Recency => None,
+    }
+}
+
 /// Unscaled pixels; an unset `name` lets Name absorb the remaining space.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ListColumns {
@@ -1134,8 +1144,15 @@ impl PreferenceManager {
     }
 
     pub fn set_list_hidden_columns(&self, hidden: Vec<ListColumnId>) {
-        self.preferences.borrow_mut().list_hidden_columns = sanitize_list_hidden_columns(&hidden);
-        self.save_preferences();
+        let hidden = sanitize_list_hidden_columns(&hidden);
+        let (sort_key, direction) = self.default_sort();
+        let fallback = list_column_for_sort(sort_key).is_some_and(|col| hidden.contains(&col));
+        self.preferences.borrow_mut().list_hidden_columns = hidden;
+        if fallback {
+            self.set_default_sort(SortKey::Name, direction);
+        } else {
+            self.save_preferences();
+        }
     }
 
     pub fn is_list_column_visible(&self, column: ListColumnId) -> bool {
@@ -1156,21 +1173,6 @@ impl PreferenceManager {
             hidden.push(column);
         }
         self.set_list_hidden_columns(hidden);
-    }
-
-    #[allow(dead_code)]
-    pub fn move_list_column(&self, column: ListColumnId, delta: isize) {
-        let mut order = self.list_column_order();
-        let Some(pos) = order.iter().position(|col| *col == column) else {
-            return;
-        };
-        let new_pos = pos as isize + delta;
-        if new_pos < 0 || new_pos >= order.len() as isize {
-            return;
-        }
-        order.remove(pos);
-        order.insert(new_pos as usize, column);
-        self.set_list_column_order(order);
     }
 
     pub fn swap_list_columns(&self, col1: ListColumnId, col2: ListColumnId) {

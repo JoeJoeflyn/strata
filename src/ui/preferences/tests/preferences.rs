@@ -1621,6 +1621,55 @@ fn item_customizations_follow_relocations_and_removals() {
 }
 
 #[test]
+fn list_column_visibility_and_sort_fallback_publish_together() {
+    gtk_test(
+        "ui::preferences::tests::preferences::list_column_visibility_and_sort_fallback_publish_together",
+        || {
+            let manager = PreferenceManager::shared();
+            let snapshots = Rc::new(RefCell::new(Vec::new()));
+            let observed = snapshots.clone();
+            manager.observe(Rc::new(move || {
+                let manager = PreferenceManager::shared();
+                observed
+                    .borrow_mut()
+                    .push((manager.default_sort(), manager.list_hidden_columns()));
+            }));
+
+            for (sort_key, column, direction) in [
+                (SortKey::Size, ListColumnId::Size, SortDirection::Ascending),
+                (SortKey::Type, ListColumnId::Type, SortDirection::Descending),
+                (
+                    SortKey::Modified,
+                    ListColumnId::Modified,
+                    SortDirection::Descending,
+                ),
+            ] {
+                manager.reset_list_columns();
+                manager.set_default_sort(sort_key, direction);
+                snapshots.borrow_mut().clear();
+
+                manager.set_list_column_visible(column, false);
+
+                assert!(!manager.is_list_column_visible(column));
+                assert_eq!(manager.default_sort(), (SortKey::Name, direction));
+                assert_eq!(
+                    snapshots.borrow().as_slice(),
+                    &[((SortKey::Name, direction), vec![column])],
+                    "visibility and fallback must publish as one complete change"
+                );
+                let saved = read_preferences().expect("saved preferences");
+                assert_eq!(saved.list_hidden_columns, vec![column]);
+                assert_eq!(saved.sort_key, "name");
+                assert_eq!(
+                    SortDirection::from_stored(&saved.sort_direction),
+                    Some(direction)
+                );
+            }
+        },
+    );
+}
+
+#[test]
 fn list_columns_order_and_visibility_persist_and_update() {
     gtk_test(
         "ui::preferences::tests::preferences::list_columns_order_and_visibility_persist_and_update",
@@ -1661,8 +1710,7 @@ fn list_columns_order_and_visibility_persist_and_update() {
             manager.set_list_column_visible(ListColumnId::Name, false);
             assert!(manager.is_list_column_visible(ListColumnId::Name));
 
-            // Move Modified to the left
-            manager.move_list_column(ListColumnId::Modified, -1);
+            manager.swap_list_columns(ListColumnId::Modified, ListColumnId::Type);
             assert_eq!(
                 manager.list_column_order(),
                 vec![

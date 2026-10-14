@@ -3101,16 +3101,15 @@ fn find_column_at_x(
         .collect();
 
     for &col in &visible_cols {
-        if let Some(cell) = find_heading_cell(headings, col) {
-            if let Some(bounds) = cell.compute_bounds(headings) {
-                if bounds.width() > 0.0 {
-                    let left = f64::from(bounds.x());
-                    let right = left + f64::from(bounds.width());
-                    if x >= left && x <= right {
-                        let is_resize = x >= (right - 8.0);
-                        return Some((col, is_resize));
-                    }
-                }
+        if let Some(cell) = find_heading_cell(headings, col)
+            && let Some(bounds) = cell.compute_bounds(headings)
+            && bounds.width() > 0.0
+        {
+            let left = f64::from(bounds.x());
+            let right = left + f64::from(bounds.width());
+            if x >= left && x <= right {
+                let is_resize = x >= (right - 8.0);
+                return Some((col, is_resize));
             }
         }
     }
@@ -3134,12 +3133,11 @@ fn column_midpoint(
     col: ListColumnId,
     columns: &ListColumnLayout,
 ) -> Option<f64> {
-    if let Some(cell) = find_heading_cell(headings, col) {
-        if let Some(bounds) = cell.compute_bounds(headings) {
-            if bounds.width() > 0.0 {
-                return Some(f64::from(bounds.x()) + (f64::from(bounds.width()) / 2.0));
-            }
-        }
+    if let Some(cell) = find_heading_cell(headings, col)
+        && let Some(bounds) = cell.compute_bounds(headings)
+        && bounds.width() > 0.0
+    {
+        return Some(f64::from(bounds.x()) + (f64::from(bounds.width()) / 2.0));
     }
     let manager = super::preferences::PreferenceManager::shared();
     let order = manager.list_column_order();
@@ -3321,22 +3319,22 @@ fn list_headings(
                 let mut swapped = false;
                 if current_idx > 0 {
                     let left_col = visible_cols[current_idx - 1];
-                    if let Some(left_mid) = column_midpoint(&headings, left_col, &columns_weak) {
-                        if current_x < left_mid {
-                            manager.swap_list_columns(drag_col, left_col);
-                            apply_columns_layout(&headings, &columns_weak, &bound_items_weak);
-                            swapped = true;
-                        }
+                    if let Some(left_mid) = column_midpoint(&headings, left_col, &columns_weak)
+                        && current_x < left_mid
+                    {
+                        manager.swap_list_columns(drag_col, left_col);
+                        apply_columns_layout(&headings, &columns_weak, &bound_items_weak);
+                        swapped = true;
                     }
                 }
                 if !swapped && current_idx + 1 < visible_cols.len() {
                     let right_col = visible_cols[current_idx + 1];
-                    if let Some(right_mid) = column_midpoint(&headings, right_col, &columns_weak) {
-                        if current_x > right_mid {
-                            manager.swap_list_columns(drag_col, right_col);
-                            apply_columns_layout(&headings, &columns_weak, &bound_items_weak);
-                            swapped = true;
-                        }
+                    if let Some(right_mid) = column_midpoint(&headings, right_col, &columns_weak)
+                        && current_x > right_mid
+                    {
+                        manager.swap_list_columns(drag_col, right_col);
+                        apply_columns_layout(&headings, &columns_weak, &bound_items_weak);
+                        swapped = true;
                     }
                 }
                 if !swapped {
@@ -3350,12 +3348,10 @@ fn list_headings(
         let drag_state = drag_state.clone();
         let headings_weak = headings_weak.clone();
         move |_, _, _| {
-            if let Some((_, _, drag_active)) = drag_state.take() {
-                if drag_active {
-                    if let Some(headings) = headings_weak.upgrade() {
-                        headings.set_cursor(None);
-                    }
-                }
+            if let Some((_, _, true)) = drag_state.take()
+                && let Some(headings) = headings_weak.upgrade()
+            {
+                headings.set_cursor(None);
             }
         }
     });
@@ -3364,12 +3360,10 @@ fn list_headings(
         let drag_state = drag_state.clone();
         let headings_weak = headings_weak.clone();
         move |_, _| {
-            if let Some((_, _, drag_active)) = drag_state.take() {
-                if drag_active {
-                    if let Some(headings) = headings_weak.upgrade() {
-                        headings.set_cursor(None);
-                    }
-                }
+            if let Some((_, _, true)) = drag_state.take()
+                && let Some(headings) = headings_weak.upgrade()
+            {
+                headings.set_cursor(None);
             }
         }
     });

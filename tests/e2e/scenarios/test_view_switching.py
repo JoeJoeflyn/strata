@@ -31,6 +31,33 @@ def test_appearance_menu_switches_presentation(strata, mode):
         == STORED_MODES[mode],
         "the chosen view to be written to settings.toml",
     )
+    if mode == "List":
+        strata.open_appearance_menu()
+        customize = strata.wait(
+            lambda: strata.window.find(role="menu item", name="Customize columns…"),
+            "the List column customization action",
+        )
+        assert customize.has_state("sensitive")
+        strata.pointer.click(customize)
+        size = strata.wait(
+            lambda: strata.window.find(role="check menu item", name="Size"),
+            "the List column visibility menu",
+        )
+        assert size.has_state("checked")
+        strata.pointer.click(size)
+        strata.wait(
+            lambda: not size.has_state("checked")
+            and '"size"' in strata.environment.read_preferences().get("list_hidden_columns", ""),
+            "Size to be hidden and saved",
+        )
+        reset = strata.window.find(role="menu item", name="Reset to default columns")
+        assert reset is not None
+        strata.pointer.click(reset)
+        strata.wait(
+            lambda: size.has_state("checked")
+            and "list_hidden_columns" not in strata.environment.read_preferences(),
+            "default column visibility to be restored",
+        )
 
 
 # AZERTY types & é " on the digit row without Shift; the row still switches views.

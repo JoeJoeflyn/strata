@@ -763,7 +763,7 @@ pub(super) fn build_appearance_menu(
         crate::assets::icons::COLUMNS,
         "Customize columns…",
         false,
-        current_mode == BrowserMode::List,
+        true,
         gtk::AccessibleRole::MenuItem,
     );
     customize_columns.set_visible(current_mode == BrowserMode::List);

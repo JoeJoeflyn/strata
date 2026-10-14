@@ -1503,6 +1503,148 @@ fn unreadable_folder_settings_use_defaults_and_are_never_overwritten() {
     );
 }
 
+#[test]
+fn list_column_options_open_after_switching_from_columns() {
+    gtk_test(
+        "ui::window::tests::preferences::list_column_options_open_after_switching_from_columns",
+        || {
+            let open = OpenWindow::open();
+            let _directory = load_folder(&open);
+            assert_eq!(open.content.browser.view_mode(), BrowserMode::Columns);
+            open.content.browser.set_view_mode(BrowserMode::List);
+            let mut appearance = None;
+            walk(open.window.upcast_ref(), &mut |widget| {
+                if widget.has_css_class("header-action")
+                    && let Some(menu) = widget.downcast_ref::<gtk::MenuButton>()
+                {
+                    appearance = Some(menu.clone());
+                }
+            });
+            let appearance = appearance.expect("Appearance menu");
+            appearance.popup();
+            let popover = appearance.popover().expect("Appearance popover");
+            let customize = label_named(popover.upcast_ref(), "Customize columns…")
+                .ancestor(gtk::Button::static_type())
+                .and_downcast::<gtk::Button>()
+                .expect("customize columns action");
+            assert!(customize.is_sensitive());
+            customize.emit_clicked();
+            wait_until(|| {
+                class_in_shown_pane(&open.content.browser.widget(), "column-popover")
+                    .iter()
+                    .any(gtk::Widget::is_mapped)
+            });
+        },
+    );
+}
+
+#[test]
+fn list_column_customization_falls_back_for_saved_and_live_folder_sorts() {
+    gtk_test(
+        "ui::window::tests::preferences::list_column_customization_falls_back_for_saved_and_live_folder_sorts",
+        || {
+            use crate::model::{FolderSort, Location, SortDirection, SortKey};
+            use crate::ui::preferences::ListColumnId;
+
+            let directory = tempfile::tempdir().expect("sort fixture");
+            std::fs::write(directory.path().join("a-large.txt"), b"large file")
+                .expect("large file");
+            std::fs::write(directory.path().join("z-small.txt"), b"a").expect("small file");
+            let location = Location::local(directory.path());
+            write_settings("browser_mode = 'list'\nlist_hidden_columns = ['size']\n");
+            write_folder_views(&format!(
+                "version = 1\n[[folder]]\npath = \"{}\"\nsort = \"size\"\ndirection = \"descending\"\n",
+                directory.path().display()
+            ));
+            let manager = PreferenceManager::shared();
+            let first = OpenWindow::open();
+            let second = OpenWindow::open();
+            let sorting = |open: &OpenWindow| {
+                open.content
+                    .browser
+                    .browser()
+                    .column_preferences(0)
+                    .map(|preferences| preferences.sort())
+            };
+            let name_descending = (SortKey::Name, SortDirection::Descending);
+            for open in [&first, &second] {
+                open.content.browser.navigate_location(location.clone());
+                wait_until(|| !column_loading(open, 0));
+                wait_until(|| sorting(open) == Some(name_descending));
+                assert!(settings_closed(open));
+                assert!(!list_heading(&open.content.browser.widget(), "Size").is_mapped());
+            }
+            assert_eq!(
+                manager.default_sort(),
+                (SortKey::Name, SortDirection::Ascending)
+            );
+            assert_eq!(
+                manager.resolve_folder_sort(&location, false),
+                FolderSort::Saved(name_descending.0, name_descending.1)
+            );
+
+            manager.set_list_column_visible(ListColumnId::Size, true);
+            first
+                .content
+                .browser
+                .browser()
+                .set_sort(0, SortKey::Size, SortDirection::Descending);
+            for open in [&first, &second] {
+                wait_until(|| sorting(open) == Some((SortKey::Size, SortDirection::Descending)));
+                wait_until(|| {
+                    open.content
+                        .browser
+                        .browser()
+                        .entry_at(0, 0)
+                        .is_some_and(|entry| entry.display_name == "a-large.txt")
+                });
+                assert!(list_heading(&open.content.browser.widget(), "Size").is_mapped());
+            }
+            manager.set_list_column_visible(ListColumnId::Size, false);
+            for open in [&first, &second] {
+                wait_until(|| sorting(open) == Some(name_descending));
+                wait_until(|| {
+                    open.content
+                        .browser
+                        .browser()
+                        .entry_at(0, 0)
+                        .is_some_and(|entry| entry.display_name == "z-small.txt")
+                });
+                assert!(!list_heading(&open.content.browser.widget(), "Size").is_mapped());
+            }
+
+            manager.set_browser_mode(BrowserMode::Columns);
+            manager.set_folder_sort(&location, SortKey::Size, SortDirection::Descending);
+            for open in [&first, &second] {
+                wait_until(|| sorting(open) == Some((SortKey::Size, SortDirection::Descending)));
+            }
+            manager.set_browser_mode(BrowserMode::List);
+            for open in [&first, &second] {
+                wait_until(|| sorting(open) == Some(name_descending));
+            }
+
+            manager.set_list_column_visible(ListColumnId::Size, true);
+            manager.set_remember_folder_views(false);
+            let local_sorts = [
+                (&first, SortDirection::Ascending),
+                (&second, SortDirection::Descending),
+            ];
+            for (open, direction) in local_sorts {
+                open.content
+                    .browser
+                    .browser()
+                    .set_sort(0, SortKey::Size, direction);
+                wait_until(|| sorting(open) == Some((SortKey::Size, direction)));
+            }
+            manager.set_list_column_visible(ListColumnId::Size, false);
+            for (open, direction) in local_sorts {
+                wait_until(|| sorting(open) == Some((SortKey::Name, direction)));
+            }
+            assert_eq!(manager.default_sort(), name_descending);
+        },
+    );
+}
+
 struct OpenWindow {
     window: gtk::ApplicationWindow,
     content: super::super::composition::WindowContent,

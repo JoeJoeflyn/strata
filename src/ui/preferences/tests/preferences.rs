@@ -813,6 +813,7 @@ fn every_saved_preference_loads_before_any_settings_page_exists() {
             assert!(manager.preview_autoplay());
             assert_eq!(manager.auto_refresh_interval(), 600);
             assert_eq!(manager.thumbnail_workers(), 6);
+            assert!(!manager.show_thumbnails());
             assert_eq!(
                 manager.cross_volume_drop_strategy(),
                 CrossVolumeDropStrategy::Move
@@ -1176,6 +1177,7 @@ fn all_preference_setters_publish_and_persist_without_duplicate_notifications() 
                 |m| m.set_preview_autoplay(false),
                 |m| m.set_auto_refresh_interval(60),
                 |m| m.set_thumbnail_workers(3),
+                |m| m.set_show_thumbnails(true),
                 |m| m.set_icons_thumbnail_size(96),
                 |m| m.set_chooser_column_width(Some(360)),
                 |m| m.set_chooser_list_columns(None),

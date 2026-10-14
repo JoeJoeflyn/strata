@@ -254,6 +254,12 @@ const TARGETS: &[Target] = &[
         aliases: "date time format relative iso 8601 long absolute modified timestamp clock appearance",
     },
     Target {
+        id: "show-thumbnails",
+        page: "theme",
+        title: "Show thumbnails",
+        aliases: "appearance images pictures photos videos documents thumbnails icons previews disable",
+    },
+    Target {
         id: "file-icon-colors",
         page: "theme",
         title: "File icon colors",

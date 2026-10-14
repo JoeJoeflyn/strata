@@ -182,6 +182,8 @@ pub(in crate::ui) struct Preferences {
     auto_refresh_interval: u32,
     #[serde(default = "crate::sandbox::browser::default_worker_limit")]
     thumbnail_workers: usize,
+    #[serde(default = "default_enabled")]
+    show_thumbnails: bool,
     #[serde(default = "default_icons_thumbnail_size")]
     icons_thumbnail_size: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,6 +394,7 @@ impl Default for Preferences {
             preview_autoplay: false,
             auto_refresh_interval: 0,
             thumbnail_workers: crate::sandbox::browser::default_worker_limit(),
+            show_thumbnails: true,
             icons_thumbnail_size: default_icons_thumbnail_size(),
             chooser_column_width: None,
             browser_column_width: None,
@@ -1062,6 +1065,15 @@ impl PreferenceManager {
         } else {
             self.save_preferences();
         }
+    }
+
+    pub fn show_thumbnails(&self) -> bool {
+        self.preferences.borrow().show_thumbnails
+    }
+
+    pub fn set_show_thumbnails(&self, enabled: bool) {
+        self.preferences.borrow_mut().show_thumbnails = enabled;
+        self.save_preferences();
     }
 
     pub fn thumbnail_workers(&self) -> usize {

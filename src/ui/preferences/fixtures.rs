@@ -77,6 +77,7 @@ pub(in crate::ui) fn non_default_preferences() -> Preferences {
         preview_autoplay: true,
         auto_refresh_interval: 600,
         thumbnail_workers: 6,
+        show_thumbnails: false,
         icons_thumbnail_size: 128,
         chooser_column_width: Some(420),
         browser_column_width: Some(380),

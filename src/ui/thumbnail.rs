@@ -18,6 +18,8 @@ use crate::{
 mod background;
 mod camera;
 mod slot;
+#[cfg(test)]
+mod tests;
 mod viewport;
 pub(crate) use slot::ThumbnailSlot;
 pub(super) use viewport::{near_viewport, request_metadata};
@@ -490,14 +492,56 @@ struct ThumbnailRequest<'a> {
     thumbnail_size: i32,
 }
 
+#[derive(Clone)]
+pub(super) struct ThumbnailSource {
+    path: PathBuf,
+    kind: Option<ThumbnailKind>,
+    modified: Option<i64>,
+    file_size: Option<u64>,
+    fallback_icon: String,
+    icon_size: i32,
+    thumbnail_size: i32,
+}
+
 fn set_thumbnail_for_path(request: ThumbnailRequest<'_>) {
+    request
+        .image
+        .set_thumbnail_source(request.kind.map(|_| ThumbnailSource {
+            path: request.path.to_path_buf(),
+            kind: request.kind,
+            modified: request.modified,
+            file_size: request.file_size,
+            fallback_icon: request.fallback_icon.to_owned(),
+            icon_size: request.icon_size,
+            thumbnail_size: request.thumbnail_size,
+        }));
+    display_thumbnail_for_path(request);
+}
+
+fn refresh_slot_thumbnail(image: &ThumbnailSlot) {
+    let Some(source) = image.thumbnail_source() else {
+        return;
+    };
+    display_thumbnail_for_path(ThumbnailRequest {
+        image,
+        path: &source.path,
+        kind: source.kind,
+        modified: source.modified,
+        file_size: source.file_size,
+        fallback_icon: &source.fallback_icon,
+        icon_size: source.icon_size,
+        thumbnail_size: source.thumbnail_size,
+    });
+}
+
+fn display_thumbnail_for_path(request: ThumbnailRequest<'_>) {
     let customization_path = (request.kind != Some(ThumbnailKind::Camera)).then_some(request.path);
     let has_custom_icon = customization_path.is_some_and(|path| {
         super::preferences::PreferenceManager::shared()
             .custom_icon(path)
             .is_some()
     });
-    if has_custom_icon {
+    if has_custom_icon || !super::preferences::PreferenceManager::shared().show_thumbnails() {
         set_fallback_icon(
             request.image,
             customization_path,
@@ -1193,6 +1237,7 @@ fn forget_slot(image_id: usize) {
 }
 
 pub(super) fn show_fallback_icon(image: &ThumbnailSlot, icon: &str, size: i32) {
+    image.set_thumbnail_source(None);
     set_fallback_icon(image, None, icon, size);
 }
 
@@ -1202,6 +1247,7 @@ pub(super) fn show_customized_icon(
     fallback_icon: &str,
     size: i32,
 ) {
+    image.set_thumbnail_source(None);
     set_fallback_icon(image, Some(path), fallback_icon, size);
 }
 
@@ -1262,6 +1308,7 @@ pub(super) fn cancel_list_item_thumbnails(item: &glib::Object) {
 
 pub(super) fn cancel_thumbnails_in(widget: &gtk::Widget) {
     if let Some(image) = widget.downcast_ref::<ThumbnailSlot>() {
+        image.set_thumbnail_source(None);
         cancel_thumbnail(image.as_ptr() as usize);
     }
     let mut child = widget.first_child();

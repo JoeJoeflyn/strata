@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: MIT
 
 use super::*;
-use crate::{
-    model::SortKey,
-    ui::preferences::{PreferenceManager, list_column_for_sort},
-};
+use crate::ui::preferences::PreferenceManager;
 
 impl BrowserView {
     fn bind_view_preference<T: PartialEq + Clone + 'static>(
@@ -135,19 +132,5 @@ impl BrowserView {
             PreferenceManager::folder_sorts_revision,
             |view, _| view.browser().resync_column_sorts(),
         );
-    }
-}
-
-impl ViewState {
-    pub(super) fn fallback_hidden_list_sort(self: &Rc<Self>) {
-        if self.mode.get() == BrowserMode::List
-            && let Some(depth) = self.browser.active_depth()
-            && let Some(preferences) = self.browser.column_preferences(depth)
-            && let Some(column) = list_column_for_sort(preferences.sort_key)
-            && !PreferenceManager::shared().is_list_column_visible(column)
-        {
-            self.browser
-                .set_sort(depth, SortKey::Name, preferences.sort_direction);
-        }
     }
 }

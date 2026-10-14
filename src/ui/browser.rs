@@ -1111,9 +1111,6 @@ impl BrowserView {
                 .clear_inactive_mode(previous),
         }
         self.state.carry_listing_search(searching);
-        if mode == BrowserMode::List {
-            self.set_list_columns();
-        }
         self.restore_view_switch_focus(filter_focus);
     }
 
@@ -1201,7 +1198,6 @@ impl BrowserView {
 
     pub fn set_list_columns(&self) {
         self.state.mode_views.borrow_mut().set_list_columns();
-        self.state.fallback_hidden_list_sort();
     }
 
     pub fn open_list_columns_popover(&self) {

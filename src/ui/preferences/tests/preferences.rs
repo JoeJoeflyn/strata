@@ -1621,9 +1621,9 @@ fn item_customizations_follow_relocations_and_removals() {
 }
 
 #[test]
-fn list_column_visibility_and_sort_fallback_publish_together() {
+fn list_column_visibility_preserves_default_sort_and_publishes_once() {
     gtk_test(
-        "ui::preferences::tests::preferences::list_column_visibility_and_sort_fallback_publish_together",
+        "ui::preferences::tests::preferences::list_column_visibility_preserves_default_sort_and_publishes_once",
         || {
             let manager = PreferenceManager::shared();
             let snapshots = Rc::new(RefCell::new(Vec::new()));
@@ -1646,23 +1646,34 @@ fn list_column_visibility_and_sort_fallback_publish_together() {
             ] {
                 manager.reset_list_columns();
                 manager.set_default_sort(sort_key, direction);
+                for (visible, hidden) in
+                    [(false, vec![column]), (true, vec![]), (false, vec![column])]
+                {
+                    snapshots.borrow_mut().clear();
+                    manager.set_list_column_visible(column, visible);
+
+                    assert_eq!(manager.is_list_column_visible(column), visible);
+                    assert_eq!(manager.default_sort(), (sort_key, direction));
+                    assert_eq!(
+                        snapshots.borrow().as_slice(),
+                        &[((sort_key, direction), hidden.clone())],
+                        "visibility must publish once without changing the sort"
+                    );
+                    let saved = read_preferences().expect("saved preferences");
+                    assert_eq!(saved.list_hidden_columns, hidden);
+                    assert_eq!(SortKey::from_stored(&saved.sort_key), Some(sort_key));
+                    assert_eq!(
+                        SortDirection::from_stored(&saved.sort_direction),
+                        Some(direction)
+                    );
+                }
                 snapshots.borrow_mut().clear();
-
-                manager.set_list_column_visible(column, false);
-
-                assert!(!manager.is_list_column_visible(column));
-                assert_eq!(manager.default_sort(), (SortKey::Name, direction));
+                manager.reset_list_columns();
+                assert_eq!(manager.default_sort(), (sort_key, direction));
                 assert_eq!(
                     snapshots.borrow().as_slice(),
-                    &[((SortKey::Name, direction), vec![column])],
-                    "visibility and fallback must publish as one complete change"
-                );
-                let saved = read_preferences().expect("saved preferences");
-                assert_eq!(saved.list_hidden_columns, vec![column]);
-                assert_eq!(saved.sort_key, "name");
-                assert_eq!(
-                    SortDirection::from_stored(&saved.sort_direction),
-                    Some(direction)
+                    &[((sort_key, direction), vec![])],
+                    "resetting columns must preserve sorting too"
                 );
             }
         },

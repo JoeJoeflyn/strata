@@ -1172,15 +1172,6 @@ impl ViewState {
         self.mode_views
             .borrow_mut()
             .handle_with_deferred_empty(event, defer_empty);
-        if matches!(
-            event,
-            BrowserEvent::ColumnAdded { .. }
-                | BrowserEvent::ColumnReloaded { .. }
-                | BrowserEvent::ColumnsTruncated { .. }
-                | BrowserEvent::ColumnsRelocated { .. }
-        ) {
-            self.fallback_hidden_list_sort();
-        }
         self.reconcile_pending_rename();
         match event {
             BrowserEvent::ColumnAdded { depth, .. } | BrowserEvent::ColumnReloaded { depth } => {

@@ -504,6 +504,7 @@ pub(super) struct ThumbnailSource {
 }
 
 fn set_thumbnail_for_path(request: ThumbnailRequest<'_>) {
+    viewport::cancel_metadata(request.image.as_ptr() as usize);
     request
         .image
         .set_thumbnail_source(request.kind.map(|_| ThumbnailSource {
@@ -1237,6 +1238,7 @@ fn forget_slot(image_id: usize) {
 }
 
 pub(super) fn show_fallback_icon(image: &ThumbnailSlot, icon: &str, size: i32) {
+    viewport::cancel_metadata(image.as_ptr() as usize);
     image.set_thumbnail_source(None);
     set_fallback_icon(image, None, icon, size);
 }
@@ -1247,6 +1249,7 @@ pub(super) fn show_customized_icon(
     fallback_icon: &str,
     size: i32,
 ) {
+    viewport::cancel_metadata(image.as_ptr() as usize);
     image.set_thumbnail_source(None);
     set_fallback_icon(image, Some(path), fallback_icon, size);
 }
@@ -1321,7 +1324,8 @@ pub(super) fn cancel_thumbnails_in(widget: &gtk::Widget) {
 fn prepare_thumbnail_target(image: &ThumbnailSlot, size: i32) -> (usize, u64) {
     let request = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
     let image_id = image.as_ptr() as usize;
-    cancel_thumbnail(image_id);
+    // Refreshing artwork must not discard the bound row's pending metadata.
+    cancel_thumbnail_request(image_id);
     image.set_slot(size);
     (image_id, request)
 }
@@ -1585,6 +1589,10 @@ fn refresh_tracked_icons(matches: impl Fn(&TrackedCustomizedIcon) -> bool) {
 
 fn cancel_thumbnail(image_id: usize) {
     viewport::cancel_metadata(image_id);
+    cancel_thumbnail_request(image_id);
+}
+
+fn cancel_thumbnail_request(image_id: usize) {
     ACTIVE_REQUESTS.with(|requests| {
         requests.borrow_mut().remove(&image_id);
     });

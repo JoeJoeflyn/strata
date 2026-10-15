@@ -899,6 +899,17 @@ fn every_saved_preference_loads_before_any_settings_page_exists() {
             assert_eq!(manager.thumbnail_workers(), 6);
             assert!(!manager.show_thumbnails());
             assert_eq!(
+                manager.list_column_order(),
+                vec![
+                    ListColumnId::Name,
+                    ListColumnId::Size,
+                    ListColumnId::Type,
+                    ListColumnId::Modified,
+                    ListColumnId::Mode,
+                ]
+            );
+            assert_eq!(manager.list_hidden_columns(), vec![ListColumnId::Mode]);
+            assert_eq!(
                 manager.cross_volume_drop_strategy(),
                 CrossVolumeDropStrategy::Move
             );
@@ -1776,7 +1787,6 @@ fn list_columns_order_and_visibility_persist_and_update() {
         || {
             let manager = PreferenceManager::shared();
 
-            // Default order and visibility
             assert_eq!(
                 manager.list_column_order(),
                 vec![
@@ -1790,7 +1800,6 @@ fn list_columns_order_and_visibility_persist_and_update() {
             assert!(manager.list_hidden_columns().is_empty());
             assert!(manager.is_list_column_visible(ListColumnId::Mode));
 
-            // Hide Mode and Type
             manager.set_list_column_visible(ListColumnId::Mode, false);
             manager.set_list_column_visible(ListColumnId::Type, false);
             assert!(!manager.is_list_column_visible(ListColumnId::Mode));
@@ -1806,7 +1815,6 @@ fn list_columns_order_and_visibility_persist_and_update() {
                 ]
             );
 
-            // Name cannot be hidden
             manager.set_list_column_visible(ListColumnId::Name, false);
             assert!(manager.is_list_column_visible(ListColumnId::Name));
 
@@ -1822,12 +1830,10 @@ fn list_columns_order_and_visibility_persist_and_update() {
                 ]
             );
 
-            // Verify persistence
             let saved = read_preferences().expect("saved preferences");
             assert_eq!(saved.list_column_order, manager.list_column_order());
             assert_eq!(saved.list_hidden_columns, manager.list_hidden_columns());
 
-            // Reset columns
             manager.reset_list_columns();
             assert_eq!(
                 manager.list_column_order(),

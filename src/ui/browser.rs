@@ -1197,7 +1197,7 @@ impl BrowserView {
     }
 
     pub fn set_list_columns(&self) {
-        self.state.mode_views.borrow_mut().set_list_columns();
+        self.state.mode_views.borrow().set_list_columns();
     }
 
     pub fn open_list_columns_popover(&self) {

@@ -1398,9 +1398,9 @@ impl ModeViews {
         }
     }
 
-    pub fn set_list_columns(&mut self) {
-        if self.mode == BrowserMode::List
-            && let Some(pane) = &self.list_pane
+    /// Also updates a hidden List pane, which is reused when List is shown again.
+    pub fn set_list_columns(&self) {
+        if let Some(pane) = &self.list_pane
             && let (Some(headings), Some(columns)) = (&pane.list_headings, &pane.list_columns)
         {
             apply_columns_layout(headings, columns, &pane.section.bound_items);

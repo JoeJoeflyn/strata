@@ -1624,7 +1624,15 @@ fn list_column_customization_preserves_saved_and_live_folder_sorts() {
                     wait_until(|| open.content.browser.view_mode() == mode);
                     check_sort(open, SortDirection::Descending);
                 }
+                if mode == BrowserMode::Icons {
+                    manager.set_list_column_visible(ListColumnId::Size, true);
+                }
             }
+            for open in [&first, &second] {
+                assert!(list_heading(&open.content.browser.widget(), "Size").is_mapped());
+            }
+            manager.set_list_column_visible(ListColumnId::Size, false);
+            settle();
             manager.reset_list_columns();
             for open in [&first, &second] {
                 assert!(list_heading(&open.content.browser.widget(), "Size").is_mapped());
@@ -1648,6 +1656,7 @@ fn list_column_customization_preserves_saved_and_live_folder_sorts() {
                     .browser()
                     .set_sort(0, SortKey::Size, direction);
                 check_sort(open, direction);
+                wait_until(|| manager.default_sort() == (SortKey::Size, direction));
             }
             manager.set_list_column_visible(ListColumnId::Size, false);
             settle();

@@ -621,6 +621,18 @@ mod page_content_bin {
     }
 
     impl WidgetImpl for PageContentBin {
+        fn request_mode(&self) -> gtk::SizeRequestMode {
+            // The page height depends on the width, because description labels
+            // wrap; without this the scroller caches a single-line height
+            // measured before the viewport width is known and the page stops
+            // short of its own content.
+            self.obj()
+                .first_child()
+                .map_or(gtk::SizeRequestMode::ConstantSize, |child| {
+                    child.request_mode()
+                })
+        }
+
         fn measure(&self, orientation: gtk::Orientation, for_size: i32) -> (i32, i32, i32, i32) {
             let Some(child) = self.obj().first_child() else {
                 return (0, 0, -1, -1);
